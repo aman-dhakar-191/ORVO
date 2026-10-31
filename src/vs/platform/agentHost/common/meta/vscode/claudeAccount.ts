@@ -14,6 +14,8 @@ export const CLAUDE_ACCOUNT_META_KEY = 'vscode.claudeAccount';
 export const CLAUDE_ACCOUNT_SIGN_IN_REQUEST_KEY = 'vscode.claudeAccount.signInRequest';
 export const CLAUDE_ACCOUNT_SIGN_IN_CODE_KEY = 'vscode.claudeAccount.signInCode';
 export const CLAUDE_ACCOUNT_SIGN_OUT_REQUEST_KEY = 'vscode.claudeAccount.signOutRequest';
+/** Whether the SDK found the user's own Claude credentials (`{ signedIn: boolean }`), published after each model refresh. */
+export const CLAUDE_ACCOUNT_NATIVE_KEY = 'vscode.claudeAccount.native';
 
 /** `claudeai`: Claude Pro/Max subscription. `console`: Anthropic Console account (API usage billing). */
 export type ClaudeSignInMethod = 'claudeai' | 'console';
@@ -97,4 +99,10 @@ export function extractClaudeAuthUrl(output: string): string | undefined {
 		}
 	}
 	return undefined;
+}
+
+/** Whether the agent host reported the user's own Claude credentials; `undefined` until it has asked the SDK. */
+export function readClaudeNativeSignedIn(state: RootState | undefined): boolean | undefined {
+	const value = state?.config?.values[CLAUDE_ACCOUNT_NATIVE_KEY] ?? state?._meta?.[CLAUDE_ACCOUNT_NATIVE_KEY];
+	return isObject(value) && typeof value.signedIn === 'boolean' ? value.signedIn : undefined;
 }

@@ -50,7 +50,7 @@ import { projectFromCopilotContext } from '../copilot/copilotGitProject.js';
 import { ICopilotApiService } from '../shared/copilotApiService.js';
 import { ClaudeSdkPackage, IClaudeAgentSdkService } from './claudeAgentSdkService.js';
 import { claudeAccountArgs, ClaudeSignInProcess, findClaudeExecutable } from './claudeSignIn.js';
-import { CLAUDE_ACCOUNT_META_KEY, CLAUDE_ACCOUNT_SIGN_IN_CODE_KEY, CLAUDE_ACCOUNT_SIGN_IN_REQUEST_KEY, CLAUDE_ACCOUNT_SIGN_OUT_REQUEST_KEY, readClaudeSignInCode, readClaudeSignInRequest, type IClaudeAccountInfo } from '../../common/claudeAccount.js';
+import { CLAUDE_ACCOUNT_META_KEY, CLAUDE_ACCOUNT_NATIVE_KEY, CLAUDE_ACCOUNT_SIGN_IN_CODE_KEY, CLAUDE_ACCOUNT_SIGN_IN_REQUEST_KEY, CLAUDE_ACCOUNT_SIGN_OUT_REQUEST_KEY, readClaudeSignInCode, readClaudeSignInRequest, type IClaudeAccountInfo } from '../../common/claudeAccount.js';
 import { AgentHostClaudeSdkRootEnvVar } from '../../common/agentService.js';
 import { buildModelEnumerationOptions } from './claudeSdkOptions.js';
 import { isClaudeAccountSetUp, resolveClaudeTransportMode, type ClaudeTransportMode } from './claudeTransportMode.js';
@@ -770,6 +770,11 @@ export class ClaudeAgent extends Disposable implements IAgent {
 		}
 	}
 
+	/** Lets the chat banner offer Claude sign-in exactly when no Claude credentials were found. */
+	private _publishNativeAccount(signedIn: boolean): void {
+		this._configurationService.publishRootTransientValues?.({ [CLAUDE_ACCOUNT_NATIVE_KEY]: { signedIn } });
+	}
+
 	private _publishAccount(info: IClaudeAccountInfo): void {
 		this._configurationService.publishRootTransientValues?.({ [CLAUDE_ACCOUNT_META_KEY]: info });
 	}
@@ -1025,6 +1030,7 @@ export class ClaudeAgent extends Disposable implements IAgent {
 		if (!canAttemptNative) {
 			// No SDK, so no evidence of an account — say so rather than retaining a stale `true`.
 			this._nativeAccountSetUp = false;
+			this._publishNativeAccount(false);
 		}
 		const [proxyOutcome, nativeOutcome] = await Promise.allSettled([
 			tokenAtStart ? this._fetchProxyModels(tokenAtStart) : Promise.resolve<readonly IAgentModelInfo[]>([]),
@@ -1090,6 +1096,7 @@ export class ClaudeAgent extends Disposable implements IAgent {
 			const [account, models] = await Promise.all([query.accountInfo(), query.supportedModels()]);
 			const setUp = isClaudeAccountSetUp(account);
 			this._nativeAccountSetUp = setUp;
+			this._publishNativeAccount(setUp);
 			// Origin only — never the credential itself.
 			this._logService.info(`[Claude] Native account check: setUp=${setUp}, provider=${account.apiProvider ?? 'none'}, tokenSource=${account.tokenSource ?? 'absent'}, apiKeySource=${account.apiKeySource ?? 'absent'}`);
 			if (!setUp) {
