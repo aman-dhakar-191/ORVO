@@ -108,6 +108,7 @@ import './mainThreadDataChannels.js';
 import './mainThreadMeteredConnection.js';
 import './mainThreadGitExtensionService.js';
 import './mainThreadBrowsers.js';
+import './mainThreadBlockingProgress.js';
 
 export class ExtensionPoints implements IWorkbenchContribution {
 

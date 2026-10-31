@@ -139,6 +139,41 @@ const apiMenus: IAPIMenu[] = [
 		supportsSubmenus: false
 	},
 	{
+		key: 'titleBar/left',
+		id: MenuId.TitleBarLeft,
+		description: localize('menus.titleBarLeft', "Actions on the left of the title bar, after the menu bar. Use \"group\": \"x@<order>\" to order them.")
+	},
+	{
+		key: 'titleBar/right',
+		id: MenuId.TitleBar,
+		description: localize('menus.titleBarRight', "Actions on the right of the title bar, outside the command center. Use the \"navigation\" group to keep them visible; others go to the \"...\" menu.")
+	},
+	{
+		key: 'commandCenter',
+		id: MenuId.CommandCenter,
+		description: localize('menus.commandCenter', "Actions inside the command center (search) container. Use \"group\": \"x@<order>\": an order below 101 is left of the search box, above 101 is right of it.")
+	},
+	{
+		key: 'menuBar/main',
+		id: MenuId.MenubarMainMenu,
+		description: localize('menus.menuBarMain', "The top level menu bar. Contribute a submenu to add a new top level menu; use \"group\": \"x@<order>\" to position it (File 1, Terminal 7, Help 8).")
+	},
+	{
+		key: 'menuBar/file',
+		id: MenuId.MenubarFileMenu,
+		description: localize('menus.menuBarFile', "The top level File menu")
+	},
+	{
+		key: 'menuBar/terminal',
+		id: MenuId.MenubarTerminalMenu,
+		description: localize('menus.menuBarTerminal', "The top level Terminal menu")
+	},
+	{
+		key: 'menuBar/help',
+		id: MenuId.MenubarHelpMenu,
+		description: localize('menus.menuBarHelp', "The top level Help menu")
+	},
+	{
 		key: 'menuBar/edit/copy',
 		id: MenuId.MenubarCopy,
 		description: localize('menus.opy', "'Copy as' submenu in the top level Edit menu")
@@ -1133,7 +1168,9 @@ menusExtensionPoint.setHandler(extensions => {
 
 					submenuRegistrations.add(submenu.id.id);
 
-					item = { submenu: submenu.id, icon: submenu.icon, title: submenu.label, group: undefined, order: undefined, when: undefined };
+					// The menu bar reads top level titles as localized strings
+					const title = menu.id === MenuId.MenubarMainMenu ? { value: submenu.label, original: submenu.label } : submenu.label;
+					item = { submenu: submenu.id, icon: submenu.icon, title, group: undefined, order: undefined, when: undefined };
 				}
 
 				if (menuItem.group) {
@@ -1144,6 +1181,11 @@ menusExtensionPoint.setHandler(extensions => {
 					} else {
 						item.group = menuItem.group;
 					}
+				}
+
+				if (menu.id === MenuId.MenubarMainMenu || menu.id === MenuId.CommandCenter || menu.id === MenuId.TitleBarLeft) {
+					// These bars only render the default group, so only the order is kept
+					item.group = undefined;
 				}
 
 				if (menu.id === MenuId.ViewContainerTitle && !menuItem.when?.includes('viewContainer == workbench.view.debug')) {
