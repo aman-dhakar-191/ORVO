@@ -115,12 +115,14 @@ class ClaudeAccountService extends Disposable implements IClaudeAccountService {
 			progress: { infinite: true },
 			actions: {
 				primary: [
-					toAction({ id: 'claude.signIn.enterCode', label: localize('claude.signIn.enterCode', "Enter Code"), run: async () => {
-						const code = await this._askForCode(authUrl);
-						if (code) {
-							this._dispatch(CLAUDE_ACCOUNT_SIGN_IN_CODE_KEY, { nonce, code });
+					toAction({
+						id: 'claude.signIn.enterCode', label: localize('claude.signIn.enterCode', "Enter Code"), run: async () => {
+							const code = await this._askForCode(authUrl);
+							if (code) {
+								this._dispatch(CLAUDE_ACCOUNT_SIGN_IN_CODE_KEY, { nonce, code });
+							}
 						}
-					} }),
+					}),
 					toAction({ id: 'claude.signIn.openPage', label: localize('claude.signIn.openPage', "Open the sign-in page"), enabled: !!authUrl, run: () => this._openAuthUrl(authUrl) }),
 				],
 			},
