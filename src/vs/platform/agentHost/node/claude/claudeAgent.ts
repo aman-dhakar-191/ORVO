@@ -11,7 +11,7 @@ import { Limiter, retry, SequencerByKey } from '../../../../base/common/async.js
 import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { CancellationError } from '../../../../base/common/errors.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
-import { Disposable, DisposableMap, DisposableStore, IDisposable, IReference } from '../../../../base/common/lifecycle.js';
+import { Disposable, DisposableMap, DisposableStore, IDisposable, IReference, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { IObservable, observableValue } from '../../../../base/common/observable.js';
 import { extUriBiasedIgnorePathCase, isEqual } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
@@ -49,6 +49,9 @@ import { PendingRequestRegistry } from '../../common/pendingRequestRegistry.js';
 import { projectFromCopilotContext } from '../copilot/copilotGitProject.js';
 import { ICopilotApiService } from '../shared/copilotApiService.js';
 import { ClaudeSdkPackage, IClaudeAgentSdkService } from './claudeAgentSdkService.js';
+import { claudeAccountArgs, ClaudeSignInProcess, findClaudeExecutable } from './claudeSignIn.js';
+import { CLAUDE_ACCOUNT_META_KEY, CLAUDE_ACCOUNT_SIGN_IN_CODE_KEY, CLAUDE_ACCOUNT_SIGN_IN_REQUEST_KEY, CLAUDE_ACCOUNT_SIGN_OUT_REQUEST_KEY, readClaudeSignInCode, readClaudeSignInRequest, type IClaudeAccountInfo } from '../../common/claudeAccount.js';
+import { AgentHostClaudeSdkRootEnvVar } from '../../common/agentService.js';
 import { buildModelEnumerationOptions } from './claudeSdkOptions.js';
 import { isClaudeAccountSetUp, resolveClaudeTransportMode, type ClaudeTransportMode } from './claudeTransportMode.js';
 import { mergeClaudeModelCatalogs, resolveClaudeSessionTransport } from './claudeModelSelection.js';
@@ -695,16 +698,92 @@ export class ClaudeAgent extends Disposable implements IAgent {
 		this._sdkSetupChannel = this._register(new AgentSdkSetupChannel({
 			id: this.id,
 			sdkPackage: ClaudeSdkPackage,
-			// Every Claude credential — subscription or `ANTHROPIC_API_KEY` — is
-			// established outside the app, and the SDK exposes no login control
-			// request, so the docs link is the only route this agent can offer.
-			setupInfo: { setupDocsUrl: CLAUDE_SETUP_DOCS_URL },
+			// The SDK exposes no login control request, so ORVO drives the SDK's own
+			// `claude auth login` (see _signIn); the docs link stays for API keys and
+			// third-party providers set up outside the app.
+			setupInfo: { setupDocsUrl: CLAUDE_SETUP_DOCS_URL, signInProviderName: 'Claude' },
 			isSdkLocal: () => this._sdkService.canLoadWithoutDownload(),
 			downloadSdk: () => this._sdkService.ensureAvailable(),
 			restartChatDiscovery: () => this._restartChatDiscovery(),
 			refreshModels: () => this._startModelRefresh(),
 		}, this._configurationService, this._agentSdkDownloader, this._logService));
+
+		this._register(this._configurationService.onDidRootConfigChange(() => this._handleAccountRequests()));
+		this._handleAccountRequests();
 	}
+
+	// #region In-app sign-in (ORVO)
+
+	private readonly _signInProcess = this._register(new MutableDisposable<ClaudeSignInProcess>());
+	private _signInNonce: string | undefined;
+
+	/** Picks up sign-in, code and sign-out requests the workbench writes into root config, clearing each once read. */
+	private _handleAccountRequests(): void {
+		const values = this._configurationService.getRootConfigValues?.() ?? {};
+		const signIn = readClaudeSignInRequest(values[CLAUDE_ACCOUNT_SIGN_IN_REQUEST_KEY]);
+		if (values[CLAUDE_ACCOUNT_SIGN_IN_REQUEST_KEY] !== undefined) {
+			this._configurationService.updateRootConfig({ [CLAUDE_ACCOUNT_SIGN_IN_REQUEST_KEY]: undefined });
+		}
+		const code = readClaudeSignInCode(values[CLAUDE_ACCOUNT_SIGN_IN_CODE_KEY]);
+		if (values[CLAUDE_ACCOUNT_SIGN_IN_CODE_KEY] !== undefined) {
+			this._configurationService.updateRootConfig({ [CLAUDE_ACCOUNT_SIGN_IN_CODE_KEY]: undefined });
+		}
+		const signOut = values[CLAUDE_ACCOUNT_SIGN_OUT_REQUEST_KEY];
+		if (signOut !== undefined) {
+			this._configurationService.updateRootConfig({ [CLAUDE_ACCOUNT_SIGN_OUT_REQUEST_KEY]: undefined });
+		}
+
+		if (signIn) {
+			void this._runAccountProcess(signIn.nonce, 'signedIn', claudeAccountArgs('signIn', signIn.method));
+		} else if (typeof signOut === 'string' && signOut) {
+			void this._runAccountProcess(signOut, 'signedOut', claudeAccountArgs('signOut'));
+		}
+		if (code && code.nonce === this._signInNonce) {
+			this._signInProcess.value?.submitCode(code.code);
+		}
+	}
+
+	private async _runAccountProcess(nonce: string, successStatus: 'signedIn' | 'signedOut', args: readonly string[]): Promise<void> {
+		this._signInNonce = nonce;
+		this._signInProcess.clear();
+		this._publishAccount({ status: 'starting', nonce });
+		try {
+			// The CLI ships inside the SDK tarball: sign-in is what first needs it for most users, so it may download here.
+			const override = process.env[AgentHostClaudeSdkRootEnvVar];
+			const sdkRoot = override || await this._agentSdkDownloader.loadSdkRoot(ClaudeSdkPackage, CancellationToken.None);
+			const executable = await findClaudeExecutable(sdkRoot);
+			if (!executable) {
+				throw new Error(`Claude executable not found in ${sdkRoot}`);
+			}
+			if (this._signInNonce !== nonce) {
+				return; // superseded while the SDK was resolving
+			}
+			this._logService.info(`[Claude] starting in-app account flow: claude ${args.join(' ')}`);
+			const run = new ClaudeSignInProcess(nonce, successStatus);
+			run.onDidReport(info => this._publishAccount(info));
+			run.onDidExit(succeeded => this._afterAccountChange(succeeded));
+			this._signInProcess.value = run;
+			run.start(executable, args);
+		} catch (error) {
+			this._logService.error(error, '[Claude] in-app sign-in could not start');
+			this._publishAccount({ status: 'error', nonce, error: error instanceof Error ? error.message : String(error) });
+		}
+	}
+
+	private _publishAccount(info: IClaudeAccountInfo): void {
+		this._configurationService.publishRootTransientValues?.({ [CLAUDE_ACCOUNT_META_KEY]: info });
+	}
+
+	/** A finished sign-in or sign-out changes what the SDK reports, so re-read the catalog and the account. */
+	private _afterAccountChange(succeeded: boolean): void {
+		this._logService.info(`[Claude] in-app account flow ${succeeded ? 'succeeded' : 'failed'}`);
+		if (succeeded) {
+			this._restartChatDiscovery();
+			void this._startModelRefresh();
+		}
+	}
+
+	// #endregion
 
 	/**
 	 * Publishes whether the SDK is on disk — and deliberately nothing about the

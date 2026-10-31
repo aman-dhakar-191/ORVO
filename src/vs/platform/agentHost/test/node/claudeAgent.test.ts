@@ -6319,9 +6319,8 @@ suite('ClaudeAgent — agent SDK setup channel', () => {
 			agent: 'claude',
 			download: 'ready',
 			setupDocsUrl: 'https://code.claude.com/docs/en/third-party-integrations',
-			// No in-app sign-in: every Claude credential is established outside the
-			// app, so the banner can only point at the docs.
-			signInProviderName: undefined,
+			// ORVO: in-app sign-in runs the SDK's own `claude auth login`; the docs stay for API keys and 3P providers.
+			signInProviderName: 'Claude',
 		});
 	});
 
