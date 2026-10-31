@@ -445,7 +445,10 @@ function packageTask(platform: string, arch: string, sourceFolderName: string, d
 			result = es.merge(result, gulp.src('.build/policies/win32/**', { base: '.build/policies/win32' })
 				.pipe(rename(f => f.dirname = `policies/${f.dirname}`)));
 
-			if (quality === 'stable' || quality === 'insider') {
+			// The Windows 11 context menu (appx) needs win32ContextMenu in product.json and the
+			// explorer command DLLs in .build/win32/appx. Builds without them skip it.
+			const hasWin32ContextMenu = !!(product as { win32ContextMenu?: Record<string, { clsid: string }> }).win32ContextMenu?.[arch];
+			if ((quality === 'stable' || quality === 'insider') && hasWin32ContextMenu) {
 				result = es.merge(result, gulp.src('.build/win32/appx/**', { base: '.build/win32' }));
 				const rawVersion = version.replace(/-\w+$/, '').split('.');
 				const appxVersion = `${rawVersion[0]}.0.${rawVersion[1]}.${rawVersion[2]}`;
