@@ -2,7 +2,7 @@ name: Release (Windows)
 
 # Branch model:
 # - main   : development branch. Every push publishes an internal-testing pre-release.
-#            A newer push cancels a main build still in progress (a full package takes 1-2 hours).
+#            A running build always finishes; pushes made meanwhile are built once, from the newest.
 # - stable : release branch. Every push (a merge from main) publishes a stable release,
 #            marked as the latest release.
 # Manual runs on any other branch build the installer and, if 'publish' is ticked, publish it
@@ -34,8 +34,9 @@ permissions: {}
 
 concurrency:
   group: release-win32-${{ github.ref }}
-  # Only the newest main build matters; never cancel a stable release build.
-  cancel-in-progress: ${{ github.ref != 'refs/heads/stable' }}
+  # Never cancel a running build (a full package takes 1-2 hours, so frequent pushes would starve it).
+  # GitHub keeps only the newest pending run per group, so intermediate pushes are skipped instead.
+  cancel-in-progress: false
 
 env:
   VSCODE_ARCH: x64
