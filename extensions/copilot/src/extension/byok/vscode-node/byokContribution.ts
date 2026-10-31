@@ -21,6 +21,7 @@ import { CustomOAIBYOKModelProvider } from './customOAIProvider';
 import { GeminiNativeBYOKLMProvider } from './geminiNativeProvider';
 import { createGptLiveSession, GPT_LIVE_SESSION_PROVIDER_ID, GptLiveModelAvailability, GptLiveSessionResult, USE_BYOK_VOICE_MODEL_SETTING } from './gptLiveSession';
 import { OllamaLMProvider } from './ollamaProvider';
+import { OpenAICompatibleLMProvider } from './openAICompatibleProvider';
 import { OAIBYOKLMProvider } from './openAIProvider';
 import { OpenRouterLMProvider } from './openRouterProvider';
 import { XAIBYOKLMProvider } from './xAIProvider';
@@ -112,6 +113,7 @@ export class BYOKContrib extends Disposable implements IExtensionContribution {
 		this._providers.set(XAIBYOKLMProvider.providerId, xai);
 		this._providers.set(OAIBYOKLMProvider.providerId, openai);
 		this._providers.set(OpenRouterLMProvider.providerId, instantiationService.createInstance(OpenRouterLMProvider, this._byokStorageService));
+		this._providers.set(OpenAICompatibleLMProvider.providerId, instantiationService.createInstance(OpenAICompatibleLMProvider, this._byokStorageService));
 		this._providers.set(AzureBYOKModelProvider.providerId, instantiationService.createInstance(AzureBYOKModelProvider, this._byokStorageService));
 		this._providers.set(CustomOAIBYOKModelProvider.providerId, instantiationService.createInstance(CustomOAIBYOKModelProvider, this._byokStorageService));
 		this._providers.set(CustomEndpointBYOKModelProvider.providerId, instantiationService.createInstance(CustomEndpointBYOKModelProvider, this._byokStorageService));

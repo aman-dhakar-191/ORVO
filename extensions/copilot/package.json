@@ -1692,6 +1692,30 @@
         }
       },
       {
+        "vendor": "openaicompatible",
+        "displayName": "OpenAI Compatible",
+        "configuration": {
+          "type": "object",
+          "properties": {
+            "baseUrl": {
+              "type": "string",
+              "title": "Base URL",
+              "description": "Base URL of an OpenAI-compatible API, for example http://localhost:20128/v1 (OmniRoute, 9router, LiteLLM, vLLM, LM Studio). Models are discovered from {baseUrl}/models."
+            },
+            "apiKey": {
+              "type": "string",
+              "secret": true,
+              "description": "API key for the endpoint",
+              "title": "API Key"
+            }
+          },
+          "required": [
+            "baseUrl",
+            "apiKey"
+          ]
+        }
+      },
+      {
         "vendor": "openai",
         "displayName": "OpenAI",
         "configuration": {
