@@ -24,6 +24,7 @@ import { createTsgoStream, spawnTsgo } from './tsgo.ts';
 import watcher from './watch/index.ts';
 
 import { createRequire } from 'module';
+import { rebrandPackageNls } from './rebrand.ts';
 const require = createRequire(import.meta.url);
 
 const root = path.dirname(path.dirname(import.meta.dirname));
@@ -37,8 +38,11 @@ function minifyExtensionResources(input: Stream): Stream {
 		.pipe(buffer())
 		.pipe(es.mapSync((f: File) => {
 			const errors: jsoncParser.ParseError[] = [];
-			const value = jsoncParser.parse(f.contents!.toString('utf8'), errors, { allowTrailingComma: true });
+			let value = jsoncParser.parse(f.contents!.toString('utf8'), errors, { allowTrailingComma: true });
 			if (errors.length === 0) {
+				if (path.basename(f.path) === 'package.nls.json') {
+					value = rebrandPackageNls(value); // English strings of the extension's contributions
+				}
 				// file parsed OK => just stringify to drop whitespace and comments
 				f.contents = Buffer.from(JSON.stringify(value));
 			}
