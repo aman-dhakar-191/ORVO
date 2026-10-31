@@ -17,6 +17,16 @@ export { extraKnownMarketplacesToConfigDict } from '../../../../../base/common/m
 
 export const DEFAULT_PLUGIN_MARKETPLACE = 'github/awesome-copilot#marketplace';
 
+/**
+ * ORVO: Salesforce's skills and plugins library (Apache-2.0). Offered as a marketplace rather than bundled, so users
+ * install only the plugins they need (each skill's description costs prompt context) and get Salesforce's updates
+ * without an ORVO release.
+ */
+export const SALESFORCE_PLUGIN_MARKETPLACE = 'forcedotcom/sf-skills';
+
+/** The marketplaces `chat.plugins.marketplaces` lists by default. */
+export const DEFAULT_PLUGIN_MARKETPLACES: readonly string[] = [DEFAULT_PLUGIN_MARKETPLACE, SALESFORCE_PLUGIN_MARKETPLACE];
+
 export const enum MarketplaceReferenceKind {
 	GitHubShorthand = 'githubShorthand',
 	GitUri = 'gitUri',
