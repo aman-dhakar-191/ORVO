@@ -16,6 +16,7 @@ import * as task from './lib/gulp/task.ts';
 import * as util from './lib/util.ts';
 
 import { createRequire } from 'module';
+import { brandInnoUpdater } from './lib/innoUpdaterBranding.ts';
 const require = createRequire(import.meta.url);
 
 const repoPath = path.dirname(import.meta.dirname);
@@ -157,6 +158,20 @@ function copyInnoUpdater(arch: string) {
 	};
 }
 
+/** inno_updater.exe is Microsoft's prebuilt tool; its window title and messages say "Visual Studio Code". */
+function brandInnoUpdaterTask(executablePath: string): task.CallbackTask {
+	return cb => {
+		try {
+			const { buffer, replacements } = brandInnoUpdater(fs.readFileSync(executablePath), product.nameLong);
+			fs.writeFileSync(executablePath, buffer);
+			console.log(`Branded ${replacements} strings in ${path.basename(executablePath)} as ${product.nameLong}`);
+			cb?.();
+		} catch (err) {
+			cb?.(err as Error);
+		}
+	};
+}
+
 function updateIcon(executablePath: string): task.CallbackTask {
 	return cb => {
 		const icon = path.join(repoPath, 'resources', 'win32', 'code.ico');
@@ -164,5 +179,5 @@ function updateIcon(executablePath: string): task.CallbackTask {
 	};
 }
 
-task.task(task.define('vscode-win32-x64-inno-updater', task.series(copyInnoUpdater('x64'), updateIcon(path.join(buildPath('x64'), 'tools', 'inno_updater.exe')))));
-task.task(task.define('vscode-win32-arm64-inno-updater', task.series(copyInnoUpdater('arm64'), updateIcon(path.join(buildPath('arm64'), 'tools', 'inno_updater.exe')))));
+task.task(task.define('vscode-win32-x64-inno-updater', task.series(copyInnoUpdater('x64'), brandInnoUpdaterTask(path.join(buildPath('x64'), 'tools', 'inno_updater.exe')), updateIcon(path.join(buildPath('x64'), 'tools', 'inno_updater.exe')))));
+task.task(task.define('vscode-win32-arm64-inno-updater', task.series(copyInnoUpdater('arm64'), brandInnoUpdaterTask(path.join(buildPath('arm64'), 'tools', 'inno_updater.exe')), updateIcon(path.join(buildPath('arm64'), 'tools', 'inno_updater.exe')))));
