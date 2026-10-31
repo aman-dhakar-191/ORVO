@@ -3,6 +3,8 @@
 	"nameLong": "Code - OSS",
 	"applicationName": "code-oss",
 	"dataFolderName": ".vscode-oss",
+	"updateUrl": "https://github.com/aman-dhakar-191/ORVO/releases/download/update-feed",
+	"staticUpdateFeed": true,
 	"sharedDataFolderName": ".vscode-oss-shared",
 	"win32MutexName": "vscodeoss",
 	"licenseName": "MIT",

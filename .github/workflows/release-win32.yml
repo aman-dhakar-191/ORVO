@@ -54,6 +54,7 @@ jobs:
       channel: ${{ steps.meta.outputs.channel }}
       filename: ${{ steps.setup-exe.outputs.filename }}
       size: ${{ steps.setup-exe.outputs.size }}
+      sha256: ${{ steps.setup-exe.outputs.sha256 }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -193,6 +194,7 @@ jobs:
           "$hash  $name" | Out-File -Encoding ascii "dist\$name.sha256"
           "filename=$name" >> $env:GITHUB_OUTPUT
           "size=$([math]::Round($exe.Length / 1MB, 2))" >> $env:GITHUB_OUTPUT
+          "sha256=$hash" >> $env:GITHUB_OUTPUT
 
       - name: Upload setup artifact
         uses: actions/upload-artifact@v4
@@ -250,3 +252,36 @@ jobs:
             Verify the download with the `.sha256` file attached below.
             The installer is not code-signed yet, so Windows SmartScreen will warn on first run.
             ${{ needs.build.outputs.channel != 'stable' && '> ⚠️ Internal testing build from a development branch. Not for general use.' || '' }}
+
+      # The app reads <updateUrl>/<platform>-<quality>.json (product.json: updateUrl, staticUpdateFeed).
+      # The feed is updated only after the release above exists, so it never points at a missing file.
+      # Roll back by uploading an older feed file; clients still only take newer versions.
+      - name: Update the update feed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.build.outputs.tag }}
+          QUALITY: ${{ needs.build.outputs.channel }}
+          FILENAME: ${{ needs.build.outputs.filename }}
+          PRODUCT_VERSION: ${{ needs.build.outputs.version }}
+          SHA256: ${{ needs.build.outputs.sha256 }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          feed="win32-x64-user-${QUALITY}.json"
+          jq -n \
+            --arg version "$COMMIT" \
+            --arg productVersion "$PRODUCT_VERSION" \
+            --arg url "https://github.com/${GH_REPO}/releases/download/${TAG}/${FILENAME}" \
+            --arg sha256hash "$SHA256" \
+            --argjson timestamp "$(date +%s000)" \
+            '{version: $version, productVersion: $productVersion, url: $url, sha256hash: $sha256hash, timestamp: $timestamp}' \
+            > "$feed"
+          cat "$feed"
+
+          if ! gh release view update-feed > /dev/null 2>&1; then
+            gh release create update-feed --prerelease --latest=false --target "$COMMIT" \
+              --title "Update feed" \
+              --notes "Update metadata read by installed ORVO builds. Do not delete."
+          fi
+          gh release upload update-feed "$feed" --clobber
