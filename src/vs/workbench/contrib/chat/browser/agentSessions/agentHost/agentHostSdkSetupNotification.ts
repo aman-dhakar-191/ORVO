@@ -6,7 +6,7 @@
 import { Disposable, DisposableStore } from '../../../../../../base/common/lifecycle.js';
 import { Event } from '../../../../../../base/common/event.js';
 import { createCommandUri, escapeMarkdownSyntaxTokens, IMarkdownString, MarkdownString } from '../../../../../../base/common/htmlContent.js';
-import { localize } from '../../../../../../nls.js';
+import { localize, localize2 } from '../../../../../../nls.js';
 import { IAgentHostService } from '../../../../../../platform/agentHost/common/agentService.js';
 import { LOCAL_AGENT_HOST_SCHEME_PREFIX } from '../../../../../../platform/agentHost/common/agentHostConnectionsService.js';
 import type { AgentSdkDownloadStatus, IAgentSdkSetupInfo } from '../../../../../../platform/agentHost/common/agentSdkSetup.js';
@@ -17,6 +17,8 @@ import { ServicesAccessor } from '../../../../../../platform/instantiation/commo
 import { IWorkbenchContribution } from '../../../../../common/contributions.js';
 import { IAgentSdkSetupService, type AgentSdkSetupState } from '../../../../../services/agentHost/browser/agentSdkSetupService.js';
 import { ICodexAccountService } from '../../../../../services/agentHost/browser/codexAccountService.js';
+import { IClaudeAccountService } from '../../../../../services/agentHost/browser/claudeAccountService.js';
+import { Action2, registerAction2 } from '../../../../../../platform/actions/common/actions.js';
 import { ChatEntitlement, IChatEntitlementService } from '../../../../../services/chat/common/chatEntitlementService.js';
 import { hasAnyModelTargetingSessionType } from '../sessionTypeAvailability.js';
 import { ChatInputNotificationActionKind, ChatInputNotificationSeverity, IChatInputNotification, IChatInputNotificationAction, IChatInputNotificationService } from '../../widget/input/chatInputNotificationService.js';
@@ -265,6 +267,25 @@ registerAgentSdkSetupCommand(AGENT_SDK_SETUP_OPEN_DOCS_COMMAND_ID, (setupService
 registerAgentSdkSetupCommand(AGENT_SDK_SETUP_RELOAD_COMMAND_ID, (setupService, agent) => setupService.requestReload(agent));
 registerAgentSdkSetupCommand(AGENT_SDK_SETUP_GITHUB_SIGN_IN_COMMAND_ID, (setupService, agent) => setupService.signInToGitHub(agent));
 registerAgentSdkSetupCommand(AGENT_SDK_SETUP_SIGN_IN_COMMAND_ID, (setupService, agent) => setupService.signIn(agent));
+
+// ORVO: the Claude account outside the setup banner, e.g. to switch accounts or sign out.
+registerAction2(class extends Action2 {
+	constructor() {
+		super({ id: 'workbench.action.chat.agentHost.claude.signIn', title: localize2('claude.signInCommand', "Sign In to Claude"), category: localize2('claude.category', "Claude"), f1: true });
+	}
+	run(accessor: ServicesAccessor): Promise<void> {
+		return accessor.get(IClaudeAccountService).signIn();
+	}
+});
+
+registerAction2(class extends Action2 {
+	constructor() {
+		super({ id: 'workbench.action.chat.agentHost.claude.signOut', title: localize2('claude.signOutCommand', "Sign Out of Claude"), category: localize2('claude.category', "Claude"), f1: true });
+	}
+	run(accessor: ServicesAccessor): Promise<void> {
+		return accessor.get(IClaudeAccountService).signOut();
+	}
+});
 
 // #endregion
 

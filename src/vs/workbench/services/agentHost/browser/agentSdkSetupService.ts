@@ -17,6 +17,7 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { IOpenerService } from '../../../../platform/opener/common/opener.js';
 import { ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
 import { ICodexAccountService } from './codexAccountService.js';
+import { IClaudeAccountService } from './claudeAccountService.js';
 
 /** The Copilot sign-in flow, shared with `AgentHostSignedOutModelsNotification`. */
 const CHAT_SETUP_COMMAND_ID = 'workbench.action.chat.triggerSetup';
@@ -119,6 +120,7 @@ class AgentSdkSetupService extends Disposable implements IAgentSdkSetupService {
 		@IOpenerService private readonly _openerService: IOpenerService,
 		@ICommandService private readonly _commandService: ICommandService,
 		@ICodexAccountService private readonly _codexAccountService: ICodexAccountService,
+		@IClaudeAccountService private readonly _claudeAccountService: IClaudeAccountService,
 	) {
 		super();
 		// `rootState` is a getter over a protocol client the host replaces on every
@@ -169,14 +171,15 @@ class AgentSdkSetupService extends Disposable implements IAgentSdkSetupService {
 	}
 
 	signIn(agent: string): void {
-		// Codex is the only agent with an in-app sign-in today, and comparing against
-		// the service's own `agent` rather than a literal keeps `'codex'` out of the
-		// workbench. A second such agent turns this comparison into a lookup.
-		if (agent !== this._codexAccountService.agent) {
-			return;
+		// Codex (ChatGPT) and, in ORVO, Claude have in-app sign-in; comparing against each service's own
+		// `agent` keeps the agent ids out of the workbench.
+		if (agent === this._codexAccountService.agent) {
+			this._reportStep(agent, 'signInClicked');
+			this._codexAccountService.signIn();
+		} else if (agent === this._claudeAccountService.agent) {
+			this._reportStep(agent, 'signInClicked');
+			void this._claudeAccountService.signIn();
 		}
-		this._reportStep(agent, 'signInClicked');
-		this._codexAccountService.signIn();
 	}
 
 	reportSetupState(agent: string, state: AgentSdkSetupState): void {
