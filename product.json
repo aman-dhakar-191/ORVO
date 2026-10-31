@@ -10,6 +10,7 @@
 	"staticUpdateFeed": true,
 	"sharedDataFolderName": ".orvo-shared",
 	"win32MutexName": "orvo",
+	"win32VersionedUpdate": true,
 	"licenseName": "MIT",
 	"licenseUrl": "https://github.com/aman-dhakar-191/ORVO/blob/main/LICENSE.txt",
 	"serverLicenseUrl": "https://github.com/aman-dhakar-191/ORVO/blob/main/LICENSE.txt",
@@ -36,6 +37,18 @@
 	"linuxDesktopName": "orvo",
 	"linuxIconName": "orvo",
 	"licenseFileName": "LICENSE.txt",
+	"extensionsGallery": {
+		"serviceUrl": "https://open-vsx.org/vscode/gallery",
+		"itemUrl": "https://open-vsx.org/vscode/item",
+		"publisherUrl": "https://open-vsx.org/namespace",
+		"extensionUrlTemplate": "https://open-vsx.org/vscode/gallery/{publisher}/{name}/latest",
+		"resourceUrlTemplate": "https://open-vsx.org/vscode/unpkg/{publisher}/{name}/{version}/{path}",
+		"controlUrl": "",
+		"nlsBaseUrl": ""
+	},
+	"linkProtectionTrustedDomains": [
+		"https://open-vsx.org"
+	],
 	"reportIssueUrl": "https://github.com/aman-dhakar-191/ORVO/issues/new",
 	"nodejsArtifactFeed": "",
 	"electronArtifactFeed": "",

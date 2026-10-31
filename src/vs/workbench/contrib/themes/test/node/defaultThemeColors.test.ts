@@ -33,6 +33,8 @@ suite('Default theme colors', () => {
 	for (const { name, file, selector } of [
 		{ name: 'Dark 2026', file: '2026-dark.json', selector: 'vs-dark' },
 		{ name: 'Light 2026', file: '2026-light.json', selector: 'vs' },
+		{ name: 'ORVO Dark', file: 'orvo-dark.json', selector: 'vs-dark' },
+		{ name: 'ORVO Light', file: 'orvo-light.json', selector: 'vs' },
 	] as const) {
 		test(`${name} defines a distinct confetti palette visible on workbench surfaces`, async () => {
 			const theme = await loadDefaultTheme(file, selector);
@@ -58,41 +60,43 @@ suite('Default theme colors', () => {
 		});
 	}
 
-	test('Light 2026 inline code and code links remain distinct and readable on Markdown surfaces', async () => {
-		const theme = await loadDefaultTheme('2026-light.json', 'vs');
-		const editorBackground = theme.getColor('editor.background')!;
-		const quoteBackground = theme.getColor('textBlockQuote.background')!.makeOpaque(editorBackground);
-		const codeBackground = theme.getColor('textPreformat.background')!;
-		const codeForeground = theme.getColor('textPreformat.foreground')!;
-		const quoteCodeBackground = codeBackground.makeOpaque(quoteBackground);
-		const textContrast = ['editor.background', 'sideBar.background', 'editorWidget.background', 'textBlockQuote.background'].map(surface => {
-			const background = theme.getColor(surface)!.makeOpaque(editorBackground);
-			const renderedBackground = codeBackground.makeOpaque(background);
-			return {
-				surface,
-				readable: codeForeground.makeOpaque(renderedBackground).getContrastRatio(renderedBackground) >= 4.5,
-			};
-		});
-		const linkDistinction = ['textLink.foreground', 'textLink.activeForeground'].map(foreground => ({
-			foreground,
-			distinctFromText: theme.getColor(foreground)!.getContrastRatio(theme.getColor('foreground')!) >= 3,
-		}));
-		const keywordForeground = theme.tokenColors.findLast(rule => rule.scope === 'keyword')?.settings.foreground;
-		assert.ok(keywordForeground);
-		const codeBlockBackground = theme.getColor('textCodeBlock.background')!.makeOpaque(editorBackground);
+	for (const { name, file } of [{ name: 'Light 2026', file: '2026-light.json' }, { name: 'ORVO Light', file: 'orvo-light.json' }]) {
+		test(`${name} inline code and code links remain distinct and readable on Markdown surfaces`, async () => {
+			const theme = await loadDefaultTheme(file, 'vs');
+			const editorBackground = theme.getColor('editor.background')!;
+			const quoteBackground = theme.getColor('textBlockQuote.background')!.makeOpaque(editorBackground);
+			const codeBackground = theme.getColor('textPreformat.background')!;
+			const codeForeground = theme.getColor('textPreformat.foreground')!;
+			const quoteCodeBackground = codeBackground.makeOpaque(quoteBackground);
+			const textContrast = ['editor.background', 'sideBar.background', 'editorWidget.background', 'textBlockQuote.background'].map(surface => {
+				const background = theme.getColor(surface)!.makeOpaque(editorBackground);
+				const renderedBackground = codeBackground.makeOpaque(background);
+				return {
+					surface,
+					readable: codeForeground.makeOpaque(renderedBackground).getContrastRatio(renderedBackground) >= 4.5,
+				};
+			});
+			const linkDistinction = ['textLink.foreground', 'textLink.activeForeground'].map(foreground => ({
+				foreground,
+				distinctFromText: theme.getColor(foreground)!.getContrastRatio(theme.getColor('foreground')!) >= 3,
+			}));
+			const keywordForeground = theme.tokenColors.findLast(rule => rule.scope === 'keyword')?.settings.foreground;
+			assert.ok(keywordForeground);
+			const codeBlockBackground = theme.getColor('textCodeBlock.background')!.makeOpaque(editorBackground);
 
-		assert.deepStrictEqual({
-			distinctFromQuote: quoteCodeBackground.getContrastRatio(quoteBackground) >= 1.3,
-			textContrast,
-			linkDistinction,
-			readableCodeBlockKeyword: Color.fromHex(keywordForeground).getContrastRatio(codeBlockBackground) >= 4.5,
-		}, {
-			distinctFromQuote: true,
-			textContrast: textContrast.map(result => ({ ...result, readable: true })),
-			linkDistinction: linkDistinction.map(result => ({ ...result, distinctFromText: true })),
-			readableCodeBlockKeyword: true,
+			assert.deepStrictEqual({
+				distinctFromQuote: quoteCodeBackground.getContrastRatio(quoteBackground) >= 1.3,
+				textContrast,
+				linkDistinction,
+				readableCodeBlockKeyword: Color.fromHex(keywordForeground).getContrastRatio(codeBlockBackground) >= 4.5,
+			}, {
+				distinctFromQuote: true,
+				textContrast: textContrast.map(result => ({ ...result, readable: true })),
+				linkDistinction: linkDistinction.map(result => ({ ...result, distinctFromText: true })),
+				readableCodeBlockKeyword: true,
+			});
 		});
-	});
+	}
 
 	test('Light 2026 rulers have at least the contrast of Light Modern', async () => {
 		const themes = await Promise.all([

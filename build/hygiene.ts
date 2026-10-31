@@ -92,8 +92,9 @@ export function hygiene(some: NodeJS.ReadWriteStream | string[] | undefined, run
 	const productJson = es.through(function (file: VinylFile) {
 		const product = JSON.parse(file.contents!.toString('utf8'));
 
-		if (product.extensionsGallery) {
-			console.error(`product.json: Contains 'extensionsGallery'`);
+		// ORVO ships its own gallery (Open VSX); only Microsoft's Marketplace, whose terms limit it to Microsoft products, is not allowed
+		if (/marketplace\.visualstudio\.com|vscode-unpkg\.net|gallerycdn\.vsassets\.io/i.test(JSON.stringify(product.extensionsGallery ?? {}))) {
+			console.error(`product.json: 'extensionsGallery' points to the Visual Studio Marketplace`);
 			errorCount++;
 		}
 
