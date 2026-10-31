@@ -1,0 +1,215 @@
+name: Release (Windows)
+
+# Branch model:
+# - main   : development branch. Pushes do not build a release (a full package takes 1-2 hours).
+#            Run this workflow manually on main to get an Insider pre-release.
+# - stable : release branch. Every push (a merge from main) builds the Windows x64 user setup
+#            and publishes it as a GitHub release.
+
+on:
+  push:
+    branches:
+      - stable
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish a GitHub release (stable on the stable branch, pre-release elsewhere)
+        type: boolean
+        default: true
+
+permissions: {}
+
+concurrency:
+  group: release-win32-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  VSCODE_ARCH: x64
+  NPM_ARCH: x64
+
+jobs:
+  build:
+    name: Build Windows x64 setup
+    runs-on: windows-latest
+    timeout-minutes: 360
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      tag: ${{ steps.meta.outputs.tag }}
+      channel: ${{ steps.meta.outputs.channel }}
+      filename: ${{ steps.setup-exe.outputs.filename }}
+      size: ${{ steps.setup-exe.outputs.size }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          lfs: true
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+
+      - name: Compute release metadata
+        id: meta
+        shell: pwsh
+        run: |
+          $version = node -p "require('./package.json').version"
+          if ("${{ github.ref }}" -eq "refs/heads/stable") {
+            $channel = "stable"
+            $tag = "v$version-$env:GITHUB_RUN_NUMBER"
+          } else {
+            $channel = "insider"
+            $tag = "v$version-insider.$env:GITHUB_RUN_NUMBER"
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "channel=$channel" >> $env:GITHUB_OUTPUT
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          Write-Host "Version $version, channel $channel, tag $tag"
+
+      # Same cache as pr-node-modules.yml / pr-win32-test.yml, so main warms it for stable.
+      - name: Restore node_modules cache
+        id: cache-node-modules
+        uses: ./.github/actions/restore-node-modules
+        with:
+          key-prefix: node_modules-windows
+          key-args: "win32 ${{ env.VSCODE_ARCH }} $(node -p process.arch)"
+
+      - name: Install dependencies
+        if: steps.cache-node-modules.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          . build/azure-pipelines/win32/exec.ps1
+          $ErrorActionPreference = "Stop"
+
+          # Patch Electron/v8 headers before native modules are built.
+          exec { node build/npm/preinstall.ts }
+
+          for ($i = 1; $i -le 5; $i++) {
+            try {
+              exec { npm ci }
+              break
+            }
+            catch {
+              if ($i -eq 5) {
+                Write-Error "npm ci failed after 5 attempts"
+                throw
+              }
+              Write-Host "npm ci failed attempt $i, retrying..."
+              Start-Sleep -Seconds 5
+            }
+          }
+        env:
+          npm_config_arch: ${{ env.NPM_ARCH }}
+          npm_config_foreground_scripts: "true"
+          VSCODE_ARCH: ${{ env.VSCODE_ARCH }}
+          ELECTRON_SKIP_BINARY_DOWNLOAD: 1
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Save node_modules cache
+        if: steps.cache-node-modules.outputs.cache-hit != 'true'
+        uses: ./.github/actions/save-node-modules
+
+      - name: Prepare Electron types
+        shell: pwsh
+        run: node build/npm/electronTypes.ts
+
+      # Compiles the built-in extensions, bundles + minifies the workbench (esbuild),
+      # downloads Electron and assembles ..\VSCode-win32-x64.
+      - name: Build client (minified)
+        shell: pwsh
+        run: |
+          . build/azure-pipelines/win32/exec.ps1
+          $ErrorActionPreference = "Stop"
+          # signtool.exe is used to strip signatures from bundled native binaries.
+          $sdk = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Directory -Filter "10.*" |
+            Sort-Object Name -Descending | Select-Object -First 1
+          if ($sdk) { $env:PATH = "$($sdk.FullName)\x64;$env:PATH" }
+          exec { npm run gulp "vscode-win32-$env:VSCODE_ARCH-min" }
+          exec { npm run gulp "vscode-win32-$env:VSCODE_ARCH-inno-updater" }
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Package user setup (Inno Setup)
+        shell: pwsh
+        run: |
+          . build/azure-pipelines/win32/exec.ps1
+          $ErrorActionPreference = "Stop"
+          exec { npm run gulp "vscode-win32-$env:VSCODE_ARCH-user-setup" }
+
+      - name: Locate setup executable
+        id: setup-exe
+        shell: pwsh
+        run: |
+          $dir = ".build\win32-$env:VSCODE_ARCH\user-setup"
+          $exe = Get-ChildItem -Path $dir -Filter "*.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $exe) {
+            Write-Error "No setup .exe found in $dir"
+            exit 1
+          }
+          $name = "ORVO-UserSetup-$env:VSCODE_ARCH-${{ steps.meta.outputs.tag }}.exe"
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item $exe.FullName "dist\$name"
+          $hash = (Get-FileHash "dist\$name" -Algorithm SHA256).Hash.ToLower()
+          "$hash  $name" | Out-File -Encoding ascii "dist\$name.sha256"
+          "filename=$name" >> $env:GITHUB_OUTPUT
+          "size=$([math]::Round($exe.Length / 1MB, 2))" >> $env:GITHUB_OUTPUT
+
+      - name: Upload setup artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: orvo-win32-${{ env.VSCODE_ARCH }}-setup
+          path: dist/*
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Build summary
+        if: always()
+        shell: pwsh
+        run: |
+          @"
+          ## ORVO Windows build
+          | | |
+          |---|---|
+          | Channel | ${{ steps.meta.outputs.channel }} |
+          | Version | ${{ steps.meta.outputs.version }} |
+          | Tag | ${{ steps.meta.outputs.tag }} |
+          | Commit | ${{ github.sha }} |
+          | Setup | ${{ steps.setup-exe.outputs.filename }} (${{ steps.setup-exe.outputs.size }} MB) |
+          "@ >> $env:GITHUB_STEP_SUMMARY
+
+  release:
+    name: Publish GitHub release
+    needs: build
+    if: github.event_name == 'push' || inputs.publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download setup artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: orvo-win32-x64-setup
+          path: dist
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.build.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: ORVO ${{ needs.build.outputs.version }} (${{ needs.build.outputs.channel }} build ${{ github.run_number }})
+          prerelease: ${{ needs.build.outputs.channel != 'stable' }}
+          make_latest: ${{ needs.build.outputs.channel == 'stable' }}
+          generate_release_notes: true
+          files: dist/*
+          body: |
+            **Channel:** ${{ needs.build.outputs.channel }}
+            **Branch:** `${{ github.ref_name }}`
+            **Commit:** ${{ github.sha }}
+            **Installer:** `${{ needs.build.outputs.filename }}` (${{ needs.build.outputs.size }} MB, Windows x64, per-user)
+
+            Verify the download with the `.sha256` file attached below.
+            The installer is not code-signed yet, so Windows SmartScreen will warn on first run.
