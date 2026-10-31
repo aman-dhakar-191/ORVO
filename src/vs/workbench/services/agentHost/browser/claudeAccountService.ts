@@ -3,14 +3,16 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { toAction } from '../../../../base/common/actions.js';
 import { DeferredPromise, raceTimeout } from '../../../../base/common/async.js';
+import { Emitter, Event } from '../../../../base/common/event.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { localize } from '../../../../nls.js';
 import { CLAUDE_AGENT_PROVIDER_ID } from '../../../../platform/agentHost/common/agent.js';
-import { CLAUDE_ACCOUNT_SIGN_IN_CODE_KEY, CLAUDE_ACCOUNT_SIGN_IN_REQUEST_KEY, CLAUDE_ACCOUNT_SIGN_OUT_REQUEST_KEY, isClaudeAuthUrl, readClaudeAccountInfo, type ClaudeSignInMethod, type IClaudeAccountInfo } from '../../../../platform/agentHost/common/claudeAccount.js';
+import { CLAUDE_ACCOUNT_SIGN_IN_CODE_KEY, CLAUDE_ACCOUNT_SIGN_IN_REQUEST_KEY, CLAUDE_ACCOUNT_SIGN_OUT_REQUEST_KEY, isClaudeAuthUrl, readClaudeAccountInfo, readClaudeNativeSignedIn, type ClaudeSignInMethod, type IClaudeAccountInfo } from '../../../../platform/agentHost/common/claudeAccount.js';
 import { IAgentHostService } from '../../../../platform/agentHost/common/agentService.js';
 import { ActionType } from '../../../../platform/agentHost/common/state/sessionActions.js';
 import { ROOT_STATE_URI } from '../../../../platform/agentHost/common/state/sessionState.js';
@@ -30,14 +32,20 @@ export interface IClaudeAccountService {
 	readonly _serviceBrand: undefined;
 	/** The agent whose account this service manages. */
 	readonly agent: string;
-	signIn(): Promise<void>;
+	/** Whether the agent host found the user's own Claude credentials; `undefined` until it has looked. */
+	readonly nativeSignedIn: boolean | undefined;
+	readonly onDidChangeAccount: Event<void>;
+	/** Signs in with `method`, or asks which account to use. */
+	signIn(method?: ClaudeSignInMethod): Promise<void>;
 	signOut(): Promise<void>;
 }
 
 /** How long the host may take to download the SDK (first use) and print the sign-in URL. */
 const START_TIMEOUT_MS = 5 * 60_000;
-/** How long the host may take to verify a pasted code. */
-const VERIFY_TIMEOUT_MS = 2 * 60_000;
+/** How long the user has to finish in the browser (the CLI's own limit is the same). */
+const SIGN_IN_TIMEOUT_MS = 10 * 60_000;
+/** How long the host may take to sign out. */
+const SIGN_OUT_TIMEOUT_MS = 2 * 60_000;
 
 interface IMethodPick extends IQuickPickItem {
 	readonly method: ClaudeSignInMethod;
@@ -49,6 +57,9 @@ class ClaudeAccountService extends Disposable implements IClaudeAccountService {
 	readonly agent = CLAUDE_AGENT_PROVIDER_ID;
 
 	private _account: IClaudeAccountInfo = { status: 'idle' };
+	private _nativeSignedIn: boolean | undefined;
+	private readonly _onDidChangeAccount = this._register(new Emitter<void>());
+	readonly onDidChangeAccount = this._onDidChangeAccount.event;
 	private readonly _waiters = new Set<(account: IClaudeAccountInfo) => void>();
 
 	constructor(
@@ -62,38 +73,64 @@ class ClaudeAccountService extends Disposable implements IClaudeAccountService {
 		const rootStateListeners = this._register(new DisposableStore());
 		const bindRootState = () => {
 			rootStateListeners.clear();
-			rootStateListeners.add(this._agentHostService.rootState.onDidChange(state => this._update(readClaudeAccountInfo(state))));
+			rootStateListeners.add(this._agentHostService.rootState.onDidChange(state => this._update(state)));
 			const state = this._agentHostService.rootState.value;
-			this._update(readClaudeAccountInfo(state instanceof Error ? undefined : state));
+			this._update(state instanceof Error ? undefined : state);
 		};
 		bindRootState();
 		this._register(this._agentHostService.onAgentHostStart(bindRootState));
 	}
 
-	async signIn(): Promise<void> {
-		const pick = await this._quickInputService.pick<IMethodPick>([
-			{ method: 'claudeai', label: localize('claude.signIn.subscription', "Claude account"), description: localize('claude.signIn.subscriptionDescription', "Pro, Max, Team or Enterprise subscription") },
-			{ method: 'console', label: localize('claude.signIn.console', "Anthropic Console account"), description: localize('claude.signIn.consoleDescription', "Anthropic API, billed per use") },
-		], { placeHolder: localize('claude.signIn.placeholder', "Sign in to Claude with") });
-		if (!pick) {
-			return;
+	get nativeSignedIn(): boolean | undefined {
+		return this._nativeSignedIn;
+	}
+
+	async signIn(method?: ClaudeSignInMethod): Promise<void> {
+		if (!method) {
+			const pick = await this._quickInputService.pick<IMethodPick>([
+				{ method: 'claudeai', label: localize('claude.signIn.subscription', "Claude account"), description: localize('claude.signIn.subscriptionDescription', "Pro, Max, Team or Enterprise subscription") },
+				{ method: 'console', label: localize('claude.signIn.console', "Anthropic Console account"), description: localize('claude.signIn.consoleDescription', "Anthropic API, billed per use") },
+			], { placeHolder: localize('claude.signIn.placeholder', "Sign in to Claude with") });
+			if (!pick) {
+				return;
+			}
+			method = pick.method;
 		}
 
 		const nonce = generateUuid();
-		this._dispatch(CLAUDE_ACCOUNT_SIGN_IN_REQUEST_KEY, { nonce, method: pick.method });
-		const started = await this._waitFor(nonce, account => account.status === 'awaitingCode' || account.status === 'error', START_TIMEOUT_MS);
-		if (!started || started.status === 'error' || !started.authUrl) {
+		this._dispatch(CLAUDE_ACCOUNT_SIGN_IN_REQUEST_KEY, { nonce, method });
+		const started = await this._waitFor(nonce, account => account.status === 'awaitingCode' || account.status === 'signedIn' || account.status === 'error', START_TIMEOUT_MS);
+		if (!started || started.status === 'error') {
 			this._showError(started?.error);
 			return;
 		}
 
-		const code = await this._askForCode(started.authUrl);
-		if (!code) {
-			// Cancelling still leaves the login process waiting; a new sign-in or the timeout ends it.
-			return;
-		}
-		this._dispatch(CLAUDE_ACCOUNT_SIGN_IN_CODE_KEY, { nonce, code });
-		const result = await this._waitFor(nonce, account => account.status === 'signedIn' || account.status === 'error', VERIFY_TIMEOUT_MS);
+		// The CLI opens the browser and, where it can, finishes through a local callback by itself; the code is only
+		// needed when the browser shows one. So wait for the CLI and offer the code as a fallback.
+		const authUrl = started.authUrl;
+		const progress = this._notificationService.notify({
+			severity: Severity.Info,
+			message: localize('claude.signIn.waiting', "Finish signing in to Claude in your browser. If the page shows a code, choose Enter Code."),
+			sticky: true,
+			progress: { infinite: true },
+			actions: {
+				primary: [
+					toAction({
+						id: 'claude.signIn.enterCode', label: localize('claude.signIn.enterCode', "Enter Code"), run: async () => {
+							const code = await this._askForCode(authUrl);
+							if (code) {
+								this._dispatch(CLAUDE_ACCOUNT_SIGN_IN_CODE_KEY, { nonce, code });
+							}
+						}
+					}),
+					toAction({ id: 'claude.signIn.openPage', label: localize('claude.signIn.openPage', "Open the sign-in page"), enabled: !!authUrl, run: () => this._openAuthUrl(authUrl) }),
+				],
+			},
+		});
+		const result = started.status === 'signedIn'
+			? started
+			: await this._waitFor(nonce, account => account.status === 'signedIn' || account.status === 'error', SIGN_IN_TIMEOUT_MS);
+		progress.close();
 		if (result?.status === 'signedIn') {
 			this._notificationService.info(localize('claude.signIn.done', "Signed in to Claude. Pick a model from the Anthropic group in the Claude agent's model picker."));
 		} else {
@@ -104,7 +141,7 @@ class ClaudeAccountService extends Disposable implements IClaudeAccountService {
 	async signOut(): Promise<void> {
 		const nonce = generateUuid();
 		this._dispatch(CLAUDE_ACCOUNT_SIGN_OUT_REQUEST_KEY, nonce);
-		const result = await this._waitFor(nonce, account => account.status === 'signedOut' || account.status === 'error', VERIFY_TIMEOUT_MS);
+		const result = await this._waitFor(nonce, account => account.status === 'signedOut' || account.status === 'error', SIGN_OUT_TIMEOUT_MS);
 		if (result?.status === 'signedOut') {
 			this._notificationService.info(localize('claude.signOut.done', "Signed out of Claude."));
 		} else {
@@ -112,22 +149,23 @@ class ClaudeAccountService extends Disposable implements IClaudeAccountService {
 		}
 	}
 
-	private _askForCode(authUrl: string): Promise<string | undefined> {
+	private _openAuthUrl(authUrl: string | undefined): void {
+		if (authUrl && isClaudeAuthUrl(authUrl)) {
+			void this._openerService.open(authUrl, { openExternal: true });
+		}
+	}
+
+	private _askForCode(authUrl: string | undefined): Promise<string | undefined> {
 		const deferred = new DeferredPromise<string | undefined>();
 		const store = new DisposableStore();
 		const input = store.add(this._quickInputService.createInputBox());
 		const openButton = { iconClass: ThemeIcon.asClassName(Codicon.linkExternal), tooltip: localize('claude.signIn.openPage', "Open the sign-in page") };
 		input.title = localize('claude.signIn.title', "Sign in to Claude");
-		input.prompt = localize('claude.signIn.prompt', "Sign in in your browser, then paste the code it shows. No browser opened? Use the button above.");
+		input.prompt = localize('claude.signIn.prompt', "Paste the code the browser shows after you sign in. No browser opened? Use the button above.");
 		input.placeholder = localize('claude.signIn.codePlaceholder', "Code from the browser");
 		input.ignoreFocusOut = true;
-		input.buttons = [openButton];
-		const open = () => {
-			if (isClaudeAuthUrl(authUrl)) {
-				void this._openerService.open(authUrl, { openExternal: true });
-			}
-		};
-		store.add(input.onDidTriggerButton(() => open()));
+		input.buttons = authUrl ? [openButton] : [];
+		store.add(input.onDidTriggerButton(() => this._openAuthUrl(authUrl)));
 		store.add(input.onDidAccept(() => {
 			const value = input.value.trim();
 			if (value) {
@@ -149,7 +187,13 @@ class ClaudeAccountService extends Disposable implements IClaudeAccountService {
 		this._agentHostService.dispatch(ROOT_STATE_URI, { type: ActionType.RootConfigChanged, config: { [key]: value } });
 	}
 
-	private _update(account: IClaudeAccountInfo): void {
+	private _update(state: Parameters<typeof readClaudeAccountInfo>[0]): void {
+		const account = readClaudeAccountInfo(state);
+		const nativeSignedIn = readClaudeNativeSignedIn(state);
+		if (nativeSignedIn !== this._nativeSignedIn) {
+			this._nativeSignedIn = nativeSignedIn;
+			this._onDidChangeAccount.fire();
+		}
 		this._account = account;
 		for (const waiter of [...this._waiters]) {
 			waiter(account);

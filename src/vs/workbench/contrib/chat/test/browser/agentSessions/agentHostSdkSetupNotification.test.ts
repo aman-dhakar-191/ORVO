@@ -13,9 +13,10 @@ import { IConfigurationService } from '../../../../../../platform/configuration/
 import { TestConfigurationService } from '../../../../../../platform/configuration/test/common/testConfigurationService.js';
 import { IDefaultAccountService } from '../../../../../../platform/defaultAccount/common/defaultAccount.js';
 import { TestInstantiationService } from '../../../../../../platform/instantiation/test/common/instantiationServiceMock.js';
-import { AGENT_SDK_SETUP_DOWNLOAD_COMMAND_ID, AGENT_SDK_SETUP_GITHUB_SIGN_IN_COMMAND_ID, AGENT_SDK_SETUP_OPEN_DOCS_COMMAND_ID, AGENT_SDK_SETUP_RELOAD_COMMAND_ID, AGENT_SDK_SETUP_SIGN_IN_COMMAND_ID, AgentHostSdkSetupNotificationContribution, agentSdkSetupNotificationId, createAgentSdkSetupNotification, getAgentDisplayNames, getAgentSdkSetupState, getAgentSdkSetupStateToReport, hasAgentSdkSetupForSessionType, type IAgentSdkSetupStateInputs } from '../../../browser/agentSessions/agentHost/agentHostSdkSetupNotification.js';
+import { CLAUDE_SIGN_IN_WITH_COMMAND_ID, AGENT_SDK_SETUP_DOWNLOAD_COMMAND_ID, AGENT_SDK_SETUP_GITHUB_SIGN_IN_COMMAND_ID, AGENT_SDK_SETUP_OPEN_DOCS_COMMAND_ID, AGENT_SDK_SETUP_RELOAD_COMMAND_ID, AGENT_SDK_SETUP_SIGN_IN_COMMAND_ID, AgentHostSdkSetupNotificationContribution, agentSdkSetupNotificationId, createAgentSdkSetupNotification, getAgentDisplayNames, getAgentSdkSetupState, getAgentSdkSetupStateToReport, hasAgentSdkSetupForSessionType, type IAgentSdkSetupStateInputs } from '../../../browser/agentSessions/agentHost/agentHostSdkSetupNotification.js';
 import { IAgentSdkSetupService, type AgentSdkSetupState } from '../../../../../services/agentHost/browser/agentSdkSetupService.js';
 import { ICodexAccountService } from '../../../../../services/agentHost/browser/codexAccountService.js';
+import { IClaudeAccountService } from '../../../../../services/agentHost/browser/claudeAccountService.js';
 import { ChatEntitlement, IChatEntitlementService } from '../../../../../services/chat/common/chatEntitlementService.js';
 import { ChatInputNotificationActionKind, IChatInputNotificationService, type IChatInputNotification, type IChatInputNotificationAction } from '../../../browser/widget/input/chatInputNotificationService.js';
 import { SessionType } from '../../../common/chatSessionsService.js';
@@ -71,6 +72,22 @@ suite('Agent SDK setup banner', () => {
 
 	suite('presentation', () => {
 		const claude: IAgentSdkSetupInfo = { agent: 'claude', download: 'notDownloaded', setupDocsUrl: 'https://example.test/claude' };
+
+		test('ORVO: Claude offers its two in-app sign-in routes as buttons, even when signed in to GitHub', () => {
+			const ready: IAgentSdkSetupInfo = { ...claude, download: 'ready', signInProviderName: 'Claude' };
+			const state = getAgentSdkSetupState({ signedIn: true, entitlementResolved: true, download: 'ready', downloadRequested: false, hasModels: false, agentAccountState: 'needsSignIn' });
+			const notification = createAgentSdkSetupNotification(ready, 'Claude', state, false, false, [
+				{ label: 'Anthropic Console', commandId: CLAUDE_SIGN_IN_WITH_COMMAND_ID, commandArgs: ['console'] },
+				{ label: 'Claude Account', commandId: CLAUDE_SIGN_IN_WITH_COMMAND_ID, commandArgs: ['claudeai'] },
+			]);
+			assert.deepStrictEqual({ state, actions: notification?.actions?.map(action => action.kind === 'command' ? [action.label, action.commandId, action.commandArgs] : action.label) }, {
+				state: 'noAccount',
+				actions: [
+					['Anthropic Console', CLAUDE_SIGN_IN_WITH_COMMAND_ID, ['console']],
+					['Claude Account', CLAUDE_SIGN_IN_WITH_COMMAND_ID, ['claudeai']],
+				],
+			});
+		});
 
 		test('the download offer names the SDK, explains it, and carries a single Download button', () => {
 			const notification = createAgentSdkSetupNotification(claude, 'Claude', 'downloadOffered');
@@ -275,6 +292,11 @@ suite('Agent SDK setup banner', () => {
 			instantiationService.stub(ICodexAccountService, {
 				agent: 'codex',
 				account: { status: 'unknown' },
+				onDidChangeAccount: Event.None,
+			});
+			instantiationService.stub(IClaudeAccountService, {
+				agent: 'claude',
+				nativeSignedIn: undefined,
 				onDidChangeAccount: Event.None,
 			});
 			instantiationService.stub(IAgentHostService, {
