@@ -88,6 +88,8 @@ function buildWin32Setup(arch: string, target: string): task.CallbackTask {
 			Version: pkg.version,
 			RawVersion: pkg.version.replace(/-\w+$/, ''),
 			Commit: commit,
+			CompanyName: product.companyName,
+			ProductUrl: product.productUrl,
 			NameVersion: product.win32NameVersion + (target === 'user' ? ' (User)' : ''),
 			ExeBasename: product.nameShort,
 			RegValueName: product.win32RegValueName,
