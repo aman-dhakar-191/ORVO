@@ -10,7 +10,6 @@
 	"staticUpdateFeed": true,
 	"sharedDataFolderName": ".orvo-shared",
 	"win32MutexName": "orvo",
-	"win32VersionedUpdate": true,
 	"licenseName": "MIT",
 	"licenseUrl": "https://github.com/aman-dhakar-191/ORVO/blob/main/LICENSE.txt",
 	"serverLicenseUrl": "https://github.com/aman-dhakar-191/ORVO/blob/main/LICENSE.txt",
