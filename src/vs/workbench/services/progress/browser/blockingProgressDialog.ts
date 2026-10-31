@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import './media/blockingProgressDialog.css';
-import { $, addDisposableListener, append, clearNode, EventType } from '../../../../base/browser/dom.js';
+import { $, addDisposableListener, append, clearNode, EventType, isHTMLElement } from '../../../../base/browser/dom.js';
 import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js';
 import { Button } from '../../../../base/browser/ui/button/button.js';
 import { DeferredPromise, disposableTimeout } from '../../../../base/common/async.js';
@@ -363,6 +363,9 @@ export class BlockingProgressDialogService extends Disposable implements IBlocki
 		task.onDidClose.fire();
 		task.onDidCancel.dispose();
 		task.onDidClose.dispose();
+		if (!this.visible.has(task)) {
+			task.timers.dispose(); // a visible row keeps its linger timer until detach
+		}
 	}
 
 	private cancel(task: ProgressTask): void {
@@ -376,7 +379,7 @@ export class BlockingProgressDialogService extends Disposable implements IBlocki
 	}
 
 	private attach(task: ProgressTask): void {
-		if (this.visible.has(task) || (task.status === 'running') === false && !task.row && task.status === 'closed') {
+		if (this.visible.has(task) || task.status === 'closed') {
 			return;
 		}
 		try {
@@ -400,6 +403,9 @@ export class BlockingProgressDialogService extends Disposable implements IBlocki
 		task.row?.element.remove();
 		task.row = undefined;
 		this.visible.delete(task);
+		if (task.status !== 'running') {
+			task.timers.dispose();
+		}
 		this.refresh();
 	}
 
@@ -469,6 +475,10 @@ export class BlockingProgressDialogService extends Disposable implements IBlocki
 	}
 
 	private onKeyDown(event: StandardKeyboardEvent, overlay: IOverlay): void {
+		// The overlay covers the workbench, so its keybindings (command palette, quick open, ...) must not run
+		// underneath it either. The buttons in the dialog handle their own keys before the event gets here.
+		event.stopPropagation();
+
 		if (event.keyCode === KeyCode.Escape) {
 			const active = this.active();
 			if (active.length && active.every(task => task.mode !== 'blocking')) {
@@ -477,6 +487,8 @@ export class BlockingProgressDialogService extends Disposable implements IBlocki
 				this.runInBackground();
 			}
 		} else if (event.keyCode === KeyCode.Tab) {
+			// Rows and their buttons come and go while the dialog is open, so the trap looks them up on each Tab
+			// eslint-disable-next-line no-restricted-syntax
 			const focusable = [...overlay.dialog.querySelectorAll<HTMLElement>('.monaco-button:not(.disabled), .orvo-progress-force-close')].filter(element => element.offsetParent !== null);
 			const first = focusable[0];
 			const last = focusable[focusable.length - 1];
@@ -498,7 +510,7 @@ export class BlockingProgressDialogService extends Disposable implements IBlocki
 		if (overlay) {
 			this.overlay = undefined;
 			overlay.store.dispose();
-			if (overlay.previousFocus instanceof HTMLElement && overlay.previousFocus.isConnected) {
+			if (isHTMLElement(overlay.previousFocus) && overlay.previousFocus.isConnected) {
 				overlay.previousFocus.focus();
 			}
 		}
@@ -537,8 +549,12 @@ export class BlockingProgressDialogService extends Disposable implements IBlocki
 		}, () => this.cancel(task));
 	}
 
-	private reportToProgressService(task: ProgressTask, increment: number): void {
-		task.notification?.progress?.report({ message: task.message, total: task.total, increment });
+	/** @param delta how much `current` moved, in the task's own units */
+	private reportToProgressService(task: ProgressTask, delta: number): void {
+		// Workbench progress is percentage based (a notification resets its total to 100), so convert;
+		// without a total there is no percentage and the bar stays indeterminate.
+		const increment = task.total && task.total > 0 ? delta / task.total * 100 : undefined;
+		task.notification?.progress?.report({ message: task.message, increment });
 	}
 }
 

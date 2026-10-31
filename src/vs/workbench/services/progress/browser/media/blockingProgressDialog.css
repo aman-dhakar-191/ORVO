@@ -5,7 +5,6 @@
 
 /* Brand accent can be overridden per theme; defaults to the theme's focus color. */
 .orvo-progress-overlay {
-	--orvo-progress-accent: var(--vscode-focusBorder);
 	position: fixed;
 	inset: 0;
 	z-index: 2574; /* just below workbench dialogs (2575) so quit/confirm dialogs stay reachable */
@@ -26,7 +25,7 @@
 	padding: 32px 36px;
 	color: var(--vscode-editorWidget-foreground, var(--vscode-foreground));
 	background: var(--vscode-editorWidget-background);
-	border: 1px solid var(--orvo-progress-accent);
+	border: 1px solid var(--vscode-focusBorder);
 	border-radius: 4px;
 	box-shadow: 0 8px 32px var(--vscode-widget-shadow);
 	outline: none;
@@ -48,7 +47,7 @@
 	gap: 10px;
 	font-size: 16px;
 	font-weight: 600;
-	color: var(--orvo-progress-accent);
+	color: var(--vscode-focusBorder);
 }
 
 .orvo-progress-row-message {
@@ -68,7 +67,7 @@
 	line-height: 1.6;
 	color: var(--vscode-descriptionForeground);
 	background: var(--vscode-textBlockQuote-background);
-	border-left: 4px solid var(--orvo-progress-accent);
+	border-left: 4px solid var(--vscode-focusBorder);
 }
 
 .orvo-progress-details-header {

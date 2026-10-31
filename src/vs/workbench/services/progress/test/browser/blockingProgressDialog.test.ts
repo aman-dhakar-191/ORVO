@@ -13,7 +13,7 @@ import { IDialogService } from '../../../../../platform/dialogs/common/dialogs.j
 import { ILayoutService } from '../../../../../platform/layout/browser/layoutService.js';
 import { ILoggerService, NullLogger } from '../../../../../platform/log/common/log.js';
 import { INotificationService } from '../../../../../platform/notification/common/notification.js';
-import { IProgressService } from '../../../../../platform/progress/common/progress.js';
+import { IProgress, IProgressService, IProgressStep } from '../../../../../platform/progress/common/progress.js';
 import { ILifecycleService } from '../../../lifecycle/common/lifecycle.js';
 import { BlockingProgressDialogService, IBlockingProgressOptions } from '../../browser/blockingProgressDialog.js';
 
@@ -23,16 +23,24 @@ suite('BlockingProgressDialogService', () => {
 	let clock: sinon.SinonFakeTimers;
 	let container: HTMLElement;
 	let notificationProgress: string[];
+	let notificationReports: IProgressStep[];
 	let service: BlockingProgressDialogService;
 
 	setup(() => {
 		clock = sinon.useFakeTimers();
 		container = mainWindow.document.body.appendChild(mainWindow.document.createElement('div'));
 		notificationProgress = [];
+		notificationReports = [];
 
 		service = disposables.add(new BlockingProgressDialogService(
 			{ activeContainer: container } as ILayoutService,
-			{ withProgress: (options: { title?: string }) => { notificationProgress.push(options.title ?? ''); return Promise.resolve(); } } as unknown as IProgressService,
+			{
+				withProgress: (options: { title?: string }, task: (progress: IProgress<IProgressStep>) => Promise<unknown>) => {
+					notificationProgress.push(options.title ?? '');
+					task({ report: step => notificationReports.push(step) });
+					return Promise.resolve();
+				}
+			} as unknown as IProgressService,
 			{} as INotificationService,
 			{} as IDialogService,
 			{ onBeforeShutdown: Event.None } as unknown as ILifecycleService,
@@ -114,6 +122,36 @@ suite('BlockingProgressDialogService', () => {
 		clock.tick(300);
 		handle.report({ current: 1 });
 		assert.strictEqual(container.querySelector('.orvo-progress-text')!.textContent, '1 / 4 (25%)');
+		handle.close();
+	});
+
+	test('notification progress is reported as a percentage of the total', () => {
+		const handle = show({ mode: 'background', total: 40 });
+		handle.report({ current: 10 });
+		handle.report({ increment: 2 });
+		assert.deepStrictEqual(notificationReports.map(step => step.increment), [0, 25, 5]);
+		handle.close();
+	});
+
+	test('notification progress without a total stays indeterminate', () => {
+		const handle = show({ mode: 'background' });
+		handle.report({ increment: 3, message: 'step' });
+		assert.deepStrictEqual(notificationReports.map(step => step.increment), [undefined, undefined]);
+		handle.close();
+	});
+
+	test('keys pressed in the overlay do not reach the workbench', () => {
+		const handle = show();
+		clock.tick(300);
+		let reachedWindow = false;
+		const listener = () => reachedWindow = true;
+		mainWindow.addEventListener('keydown', listener);
+		try {
+			container.querySelector('.orvo-progress-dialog')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'p', ctrlKey: true, shiftKey: true, bubbles: true }));
+		} finally {
+			mainWindow.removeEventListener('keydown', listener);
+		}
+		assert.strictEqual(reachedWindow, false);
 		handle.close();
 	});
 });
