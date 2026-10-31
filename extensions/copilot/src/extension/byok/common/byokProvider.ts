@@ -228,7 +228,8 @@ export function isClientBYOKAllowed(hasGitHubSession: boolean, copilotToken: Omi
 		return true;
 	}
 	if (!copilotToken) {
-		return false;
+		// ORVO: signed in to GitHub without Copilot access (no token) still gets the user's own models
+		return true;
 	}
 	return copilotToken.isInternal || copilotToken.isIndividual || copilotToken.isClientBYOKEnabled();
 }
