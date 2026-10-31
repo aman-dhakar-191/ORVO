@@ -155,6 +155,42 @@ jobs:
         shell: pwsh
         run: node build/npm/electronTypes.ts
 
+      # The built-in Claude and Codex agents download their SDK on first use from product.agentSdks.
+      # Microsoft builds these tarballs from the pinned versions in build/agent-sdk/agents and hosts them on
+      # its CDN; ORVO builds the same tarballs and hosts them on the rolling 'agent-sdks' GitHub release
+      # (uploaded by the release job, before the installer is published). The gulp build stamps the
+      # results file into product.json.
+      - name: Produce agent SDKs
+        shell: pwsh
+        run: |
+          . build/azure-pipelines/win32/exec.ps1
+          $ErrorActionPreference = "Stop"
+          exec { node build/agent-sdk/produce.ts --vscode-platform=win32 --arch=$env:VSCODE_ARCH }
+          $suffix = "-win32-$env:VSCODE_ARCH.tgz"
+          $results = [ordered]@{}
+          foreach ($tgz in Get-ChildItem .build/agent-sdk/tarballs -Filter *.tgz) {
+            # produce.ts names them {sdk}-{version}-{sdkTarget}.tgz; SDK ids have no '-'
+            if (-not $tgz.Name.EndsWith($suffix)) { throw "Unexpected agent SDK tarball $($tgz.Name)" }
+            $sdk, $version = $tgz.Name.Substring(0, $tgz.Name.Length - $suffix.Length).Split('-', 2)
+            $results[$sdk] = [ordered]@{
+              version = $version
+              urlTemplate = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/agent-sdks/$sdk-$version-{sdkTarget}.tgz"
+            }
+          }
+          if ($results.Count -eq 0) { throw "produce.ts built no agent SDK tarballs" }
+          $file = Join-Path $PWD '.build/agent-sdk/results.json'
+          $results | ConvertTo-Json -Depth 3 | Set-Content -Encoding utf8NoBOM $file
+          Get-Content $file
+          "AGENT_SDK_RESULTS_FILE=$file" >> $env:GITHUB_ENV
+
+      - name: Upload agent SDK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: orvo-agent-sdks-win32-${{ env.VSCODE_ARCH }}
+          path: .build/agent-sdk/tarballs/*.tgz
+          retention-days: 30
+          if-no-files-found: error
+
       # Compiles the built-in extensions, bundles + minifies the workbench (esbuild),
       # downloads Electron and assembles ..\VSCode-win32-x64.
       - name: Build client (minified)
@@ -233,6 +269,36 @@ jobs:
         with:
           name: orvo-win32-x64-setup
           path: dist
+
+      - name: Download agent SDK artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: orvo-agent-sdks-win32-x64
+          path: agent-sdks
+
+      # Before the installer is published, so product.agentSdks never points at a missing file.
+      # Tarballs are per SDK version, so they are only uploaded when an SDK version changes.
+      - name: Publish agent SDKs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if ! gh release view agent-sdks > /dev/null 2>&1; then
+            gh release create agent-sdks --prerelease --latest=false --target "$COMMIT" \
+              --title "Agent SDKs" \
+              --notes "Claude and Codex agent SDKs downloaded by installed ORVO builds (product.agentSdks). Do not delete."
+          fi
+          existing="$(gh release view agent-sdks --json assets --jq '.assets[].name')"
+          for tgz in agent-sdks/*.tgz; do
+            name="$(basename "$tgz")"
+            if grep -qxF "$name" <<< "$existing"; then
+              echo "$name already published"
+            else
+              gh release upload agent-sdks "$tgz"
+            fi
+          done
 
       - name: Create release
         uses: softprops/action-gh-release@v2
