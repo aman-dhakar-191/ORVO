@@ -39,9 +39,16 @@ describe('ORVO Code Map', () => {
 		await write('src/lazy/index.js', 'export default 1;');
 		await write('node_modules/x/index.js', '');
 		await write('dist/out.js', '');
+		await write('packages/core/package.json', '{"name": "@acme/core", "main": "dist/index.js"}');
+		await write('packages/core/src/index.ts', 'export const core = 1;');
+		await write('packages/core/src/util.ts', 'export const util = 1;');
+		await write('packages/app/main.ts', 'import { core } from "@acme/core";\nimport { util } from "@acme/core/util";\nimport lodash from "lodash";');
 		try {
 			const graph = await buildDepsGraph(root);
-			assert.deepStrictEqual(graph.files, ['src/index.ts', 'src/lazy/index.js', 'src/lib/a.ts', 'src/lib/b.ts', 'src/lib/types.ts']);
+			assert.deepStrictEqual(graph.files, ['packages/app/main.ts', 'packages/core/src/index.ts', 'packages/core/src/util.ts', 'src/index.ts', 'src/lazy/index.js', 'src/lib/a.ts', 'src/lib/b.ts', 'src/lib/types.ts']);
+			// Workspace packages resolve to their files (main's dist/ mapped back to src/); others stay packages.
+			assert.deepStrictEqual(graph.imports['packages/app/main.ts'], ['packages/core/src/index.ts', 'packages/core/src/util.ts']);
+			assert.deepStrictEqual(graph.packages['packages/app/main.ts'], ['lodash']);
 			assert.deepStrictEqual(graph.imports['src/index.ts'], ['src/lazy/index.js', 'src/lib/a.ts', 'src/lib/b.ts', 'src/lib/types.ts']);
 			assert.deepStrictEqual(graph.packages['src/index.ts'], ['@scope/pkg', 'fs', 'react']);
 			assert.deepStrictEqual(graph.unresolved, { 'src/lib/b.ts': ['./missing'] });

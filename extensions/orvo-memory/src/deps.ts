@@ -104,7 +104,28 @@ function firstExisting(base: string, files: ReadonlySet<string>): string | undef
  * Resolves one specifier imported by `from`: a project file, a package, or an unresolved relative import.
  * `files` holds every project file (sources and JSON) relative to the root.
  */
-export function resolveSpecifier(from: string, specifier: string, files: ReadonlySet<string>, aliases?: PathAliases): { file?: string; package?: string; unresolved?: string } {
+/** A package that lives in this project (a monorepo workspace): where it is and the files its entry fields name. */
+export interface LocalPackage {
+	readonly dir: string;
+	readonly entries: readonly string[];
+}
+
+/** Files a local package's entry resolves to: its entry fields, built output mapped back to `src/`, then `index`. */
+function resolveLocalPackage(pkg: LocalPackage, subpath: string, files: ReadonlySet<string>): string | undefined {
+	const join = (relative: string) => path.posix.join(pkg.dir, relative);
+	const candidates = subpath
+		? [subpath, `src/${subpath}`]
+		: [...pkg.entries, ...pkg.entries.map(entry => entry.replace(/^\.?\/?(dist|lib|build|out)\//, 'src/').replace(/\.d\.ts$/, '')), 'src/index', 'index'];
+	for (const candidate of candidates) {
+		const file = firstExisting(join(candidate.replace(/^\.\//, '')), files);
+		if (file) {
+			return file;
+		}
+	}
+	return undefined;
+}
+
+export function resolveSpecifier(from: string, specifier: string, files: ReadonlySet<string>, aliases?: PathAliases, localPackages?: ReadonlyMap<string, LocalPackage>): { file?: string; package?: string; unresolved?: string } {
 	if (ASSET_PATTERN.test(specifier)) {
 		return {}; // stylesheets, images, HTML: not part of the code graph
 	}
@@ -136,7 +157,35 @@ export function resolveSpecifier(from: string, specifier: string, files: Readonl
 			return { file };
 		}
 	}
-	return { package: packageName(specifier) };
+	const name = packageName(specifier);
+	const local = localPackages?.get(name);
+	if (local) {
+		const file = resolveLocalPackage(local, specifier.slice(name.length).replace(/^\//, ''), files);
+		if (file) {
+			return { file };
+		}
+	}
+	return { package: name };
+}
+
+/** `name` -> folder and entry files of every package.json in the project, so workspace imports resolve to files. */
+async function readLocalPackages(root: string, files: readonly string[]): Promise<Map<string, LocalPackage>> {
+	const result = new Map<string, LocalPackage>();
+	for (const file of files.filter(candidate => candidate === 'package.json' || candidate.endsWith('/package.json'))) {
+		try {
+			const json = JSON.parse(await fs.readFile(path.join(root, file), 'utf8'));
+			if (typeof json?.name !== 'string') {
+				continue;
+			}
+			const dot = typeof json.exports === 'string' ? json.exports : json.exports?.['.'];
+			const exported = typeof dot === 'string' ? [dot] : [dot?.source, dot?.types, dot?.import, dot?.require, dot?.default].filter(entry => typeof entry === 'string');
+			const entries = [json.source, json.types, json.typings, ...exported, json.module, json.main].filter((entry): entry is string => typeof entry === 'string');
+			result.set(json.name, { dir: path.posix.dirname(file) === '.' ? '' : path.posix.dirname(file), entries });
+		} catch {
+			// not JSON: skip
+		}
+	}
+	return result;
 }
 
 /** Reads `baseUrl` and `paths` from the root tsconfig.json or jsconfig.json, if any. */
@@ -221,6 +270,7 @@ function isSource(file: string): boolean {
 export async function buildDepsGraph(root: string): Promise<DepsGraph> {
 	const [{ files: all, truncated }, aliases] = await Promise.all([listFiles(root), readAliases(root)]);
 	const fileSet = new Set(all);
+	const localPackages = await readLocalPackages(root, all);
 	const sources = all.filter(isSource).sort();
 	const imports: Record<string, string[]> = {};
 	const packages: Record<string, string[]> = {};
@@ -241,7 +291,7 @@ export async function buildDepsGraph(root: string): Promise<DepsGraph> {
 			const filePackages = new Set<string>();
 			const fileUnresolved = new Set<string>();
 			for (const specifier of extractSpecifiers(texts[index])) {
-				const resolved = resolveSpecifier(file, specifier, fileSet, aliases);
+				const resolved = resolveSpecifier(file, specifier, fileSet, aliases, localPackages);
 				if (resolved.file && resolved.file !== file) {
 					fileImports.add(resolved.file);
 				} else if (resolved.package) {
