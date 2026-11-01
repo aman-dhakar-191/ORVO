@@ -18,6 +18,9 @@
     "untrustedWorkspaces": {
       "supported": false,
       "description": "%untrusted%"
+    },
+    "agentsWindow": {
+      "supported": true
     }
   },
   "activationEvents": [
