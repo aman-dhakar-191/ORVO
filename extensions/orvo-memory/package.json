@@ -78,6 +78,11 @@
           ],
           "default": "ask",
           "description": "%config.connectAgents%"
+        },
+        "orvoMemory.codeMap.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "%config.codeMap.enabled%"
         }
       }
     },
@@ -115,6 +120,12 @@
         "title": "%command.openIndex%",
         "category": "%category%",
         "icon": "$(book)"
+      },
+      {
+        "command": "orvoMemory.openCodeMap",
+        "title": "%command.openCodeMap%",
+        "category": "%category%",
+        "icon": "$(type-hierarchy)"
       }
     ],
     "viewsContainers": {
@@ -201,6 +212,12 @@
             "query"
           ]
         }
+      }
+    ],
+    "mcpServerDefinitionProviders": [
+      {
+        "id": "orvoMemory.codeMap",
+        "label": "%mcp.codeMap%"
       }
     ]
   },
