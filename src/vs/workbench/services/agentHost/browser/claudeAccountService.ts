@@ -7,7 +7,7 @@ import { toAction } from '../../../../base/common/actions.js';
 import { DeferredPromise, raceTimeout } from '../../../../base/common/async.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Codicon } from '../../../../base/common/codicons.js';
-import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
+import { Disposable, DisposableStore, toDisposable } from '../../../../base/common/lifecycle.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { localize } from '../../../../nls.js';
@@ -108,6 +108,8 @@ class ClaudeAccountService extends Disposable implements IClaudeAccountService {
 		// The CLI opens the browser and, where it can, finishes through a local callback by itself; the code is only
 		// needed when the browser shows one. So wait for the CLI and offer the code as a fallback.
 		const authUrl = started.authUrl;
+		// Code boxes still open when sign-in settles (the browser callback finished it, or it failed) are closed then.
+		const codeInputs = new DisposableStore();
 		const progress = this._notificationService.notify({
 			severity: Severity.Info,
 			message: localize('claude.signIn.waiting', "Finish signing in to Claude in your browser. If the page shows a code, choose Enter Code."),
@@ -117,7 +119,7 @@ class ClaudeAccountService extends Disposable implements IClaudeAccountService {
 				primary: [
 					toAction({
 						id: 'claude.signIn.enterCode', label: localize('claude.signIn.enterCode', "Enter Code"), run: async () => {
-							const code = await this._askForCode(authUrl);
+							const code = await this._askForCode(authUrl, codeInputs);
 							if (code) {
 								this._dispatch(CLAUDE_ACCOUNT_SIGN_IN_CODE_KEY, { nonce, code });
 							}
@@ -129,7 +131,7 @@ class ClaudeAccountService extends Disposable implements IClaudeAccountService {
 		});
 		if (method === 'claudeai' && started.status === 'awaitingCode') {
 			// `claude setup-token` always ends on Anthropic's code page, so ask for the code right away.
-			void this._askForCode(authUrl).then(code => {
+			void this._askForCode(authUrl, codeInputs).then(code => {
 				if (code) {
 					this._dispatch(CLAUDE_ACCOUNT_SIGN_IN_CODE_KEY, { nonce, code });
 				}
@@ -139,6 +141,7 @@ class ClaudeAccountService extends Disposable implements IClaudeAccountService {
 			? started
 			: await this._waitFor(nonce, account => account.status === 'signedIn' || account.status === 'error', SIGN_IN_TIMEOUT_MS);
 		progress.close();
+		codeInputs.dispose();
 		if (result?.status === 'signedIn') {
 			this._notificationService.info(localize('claude.signIn.done', "Signed in to Claude. Pick a model from the Anthropic group in the Claude agent's model picker."));
 		} else {
@@ -163,9 +166,13 @@ class ClaudeAccountService extends Disposable implements IClaudeAccountService {
 		}
 	}
 
-	private _askForCode(authUrl: string | undefined): Promise<string | undefined> {
+	private _askForCode(authUrl: string | undefined, owner: DisposableStore): Promise<string | undefined> {
 		const deferred = new DeferredPromise<string | undefined>();
-		const store = new DisposableStore();
+		if (owner.isDisposed) {
+			void deferred.complete(undefined);
+			return deferred.p;
+		}
+		const store = owner.add(new DisposableStore());
 		const input = store.add(this._quickInputService.createInputBox());
 		const openButton = { iconClass: ThemeIcon.asClassName(Codicon.linkExternal), tooltip: localize('claude.signIn.openPage', "Open the sign-in page") };
 		input.title = localize('claude.signIn.title', "Sign in to Claude");
@@ -185,7 +192,12 @@ class ClaudeAccountService extends Disposable implements IClaudeAccountService {
 			if (!deferred.isSettled) {
 				void deferred.complete(undefined);
 			}
-			store.dispose();
+			owner.delete(store);
+		}));
+		store.add(toDisposable(() => {
+			if (!deferred.isSettled) {
+				void deferred.complete(undefined);
+			}
 		}));
 		input.show();
 		return deferred.p;

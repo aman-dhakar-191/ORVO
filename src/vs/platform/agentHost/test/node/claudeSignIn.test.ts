@@ -116,7 +116,8 @@ suite('claudeSignIn', () => {
 				stripTerminalEscapes('\x1b[32mok\x1b[0m \x1b]8;;https://x\x07link\x1b]8;;\x07'),
 				extractClaudeOauthToken(`\x1b[1mYour OAuth token:\x1b[0m\r\n\x1b[36m${TOKEN}\x1b[39m\r\n`),
 				extractClaudeOauthToken('sk-ant-api03-notASubscriptionToken1234567890'),
-			], ['ok link', TOKEN, undefined]);
+				extractClaudeOauthToken(`${TOKEN.slice(0, 30)}\x1b[2K\r${TOKEN}\r\n`),
+			], ['ok link', TOKEN, undefined, TOKEN]);
 		});
 
 		test('reports the URL, relays a code, and settles with the printed token', async () => {
@@ -128,7 +129,9 @@ suite('claudeSignIn', () => {
 			pty.data.fire(SCREEN);
 			run.submitCode('ab#c');
 			await new Promise(resolve => setTimeout(resolve, 350));
-			pty.data.fire(`\r\n\x1b[32m✓ Long-lived authentication token created successfully!\x1b[39m\r\nYour OAuth token (valid for 1 year):\r\n${TOKEN}\r\n`);
+			// The token can arrive split across writes: settling on the first part saved a token the API rejects.
+			pty.data.fire(`\r\n\x1b[32m✓ Long-lived authentication token created successfully!\x1b[39m\r\nYour OAuth token (valid for 1 year):\r\n${TOKEN.slice(0, 30)}`);
+			pty.data.fire(`${TOKEN.slice(30)}\r\n`);
 			const token = await exited;
 			listener.dispose();
 			pty.dispose();

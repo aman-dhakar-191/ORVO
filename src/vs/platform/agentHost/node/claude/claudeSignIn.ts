@@ -131,7 +131,10 @@ export class ClaudeSignInProcess extends Disposable {
 // #region Subscription token (ORVO, personal use)
 
 /** The long-lived token `claude setup-token` prints once the user has signed in. */
-const OAUTH_TOKEN_PATTERN = /sk-ant-oat\d+-[A-Za-z0-9_-]{20,}/;
+const OAUTH_TOKEN_PATTERN = /sk-ant-oat\d+-[A-Za-z0-9_-]{20,}/g;
+
+/** How long the terminal must stay quiet after a token shows up: it can arrive split across several writes. */
+const TOKEN_QUIET_MS = 1000;
 
 /** Strips the terminal escapes a TUI writes (colors, cursor moves, OSC hyperlinks). */
 export function stripTerminalEscapes(text: string): string {
@@ -141,8 +144,18 @@ export function stripTerminalEscapes(text: string): string {
 		.replace(/\x1b[=>()][0-9A-Za-z]?/g, '');
 }
 
+/**
+ * The token in the output. The TUI redraws, so a token may show up more than once and, mid-write, cut short: take the
+ * longest one.
+ */
 export function extractClaudeOauthToken(output: string): string | undefined {
-	return stripTerminalEscapes(output).match(OAUTH_TOKEN_PATTERN)?.[0];
+	let longest: string | undefined;
+	for (const [token] of stripTerminalEscapes(output).matchAll(OAUTH_TOKEN_PATTERN)) {
+		if (!longest || token.length > longest.length) {
+			longest = token;
+		}
+	}
+	return longest;
 }
 
 /** The environment variable the Claude CLI (and so the SDK) reads a subscription token from. */
@@ -195,11 +208,12 @@ export class ClaudeSetupTokenProcess extends Disposable {
 	private _reportedUrl = false;
 	private _settled = false;
 	private _error: string | undefined;
+	private _tokenTimer: ReturnType<typeof setTimeout> | undefined;
 
 	constructor(private readonly _pty: IClaudePty, private readonly _nonce: string) {
 		super();
 		const timeout = setTimeout(() => this._finish(undefined, 'Sign-in timed out.'), SIGN_IN_TIMEOUT_MS);
-		this._register({ dispose: () => clearTimeout(timeout) });
+		this._register({ dispose: () => { clearTimeout(timeout); clearTimeout(this._tokenTimer); } });
 		this._register(_pty.onData(data => {
 			this._output += data;
 			if (!this._reportedUrl) {
@@ -209,9 +223,10 @@ export class ClaudeSetupTokenProcess extends Disposable {
 					this._onDidReport.fire({ status: 'awaitingCode', nonce: this._nonce, authUrl });
 				}
 			}
-			const token = extractClaudeOauthToken(this._output);
-			if (token) {
-				this._finish(token);
+			if (extractClaudeOauthToken(this._output)) {
+				// Wait for the rest of it: settling on the first chunk saved a cut-off token that the API rejects.
+				clearTimeout(this._tokenTimer);
+				this._tokenTimer = setTimeout(() => this._finish(extractClaudeOauthToken(this._output)), TOKEN_QUIET_MS);
 				return;
 			}
 			// A rejected code does not end the TUI ("Press Enter to retry"), so settle on the message instead of waiting.
