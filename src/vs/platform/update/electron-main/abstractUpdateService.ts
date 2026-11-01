@@ -17,10 +17,11 @@ import { IEnvironmentMainService } from '../../environment/electron-main/environ
 import { ILifecycleMainService, LifecycleMainPhase } from '../../lifecycle/electron-main/lifecycleMainService.js';
 import { ILogService } from '../../log/common/log.js';
 import { IProductService } from '../../product/common/productService.js';
-import { IRequestService } from '../../request/common/request.js';
 import { StorageScope, StorageTarget } from '../../storage/common/storage.js';
 import { IApplicationStorageMainService } from '../../storage/electron-main/storageMainService.js';
 import { ITelemetryService } from '../../telemetry/common/telemetry.js';
+import { asJson, IRequestService } from '../../request/common/request.js';
+import { isNewerStaticFeedUpdate } from '../common/staticUpdateFeed.js';
 import { AvailableForDownload, DisablementReason, IUpdate, IUpdateService, State, StateType, UpdateType } from '../common/update.js';
 
 const LAST_KNOWN_VERSION_STORAGE_KEY = 'abstractUpdateService/lastKnownVersion';
@@ -206,6 +207,12 @@ export abstract class AbstractUpdateService extends Disposable implements IUpdat
 		if (!this.productService.updateUrl || !this.productService.commit) {
 			this.setDisabledPermanently(DisablementReason.MissingConfiguration);
 			this.logService.info('update#ctor - updates are disabled as there is no update URL');
+			return;
+		}
+
+		if (this.productService.staticUpdateFeed && !this.supportsStaticUpdateFeed()) {
+			this.setDisabledPermanently(DisablementReason.MissingConfiguration);
+			this.logService.info('update#ctor - updates are disabled as this platform does not support a static update feed');
 			return;
 		}
 
@@ -670,6 +677,12 @@ export abstract class AbstractUpdateService extends Disposable implements IUpdat
 			const context = await this.requestService.request({ url, headers, callSite: 'updateService.isLatestVersion' }, token);
 			const statusCode = context.res.statusCode;
 			this.logService.trace('update#isLatestVersion() - response', { statusCode });
+
+			if (this.productService.staticUpdateFeed) {
+				const update = await asJson<IUpdate>(context);
+				return !isNewerStaticFeedUpdate(update, commit ?? this.productService.commit, this.productService.version);
+			}
+
 			// The update server replies with 204 (No Content) when no update is available.
 			return statusCode === 204;
 
@@ -699,6 +712,11 @@ export abstract class AbstractUpdateService extends Disposable implements IUpdat
 
 	protected getUpdateType(): UpdateType {
 		return UpdateType.Archive;
+	}
+
+	/** Whether this platform's update service can read a static update feed (`IProductConfiguration.staticUpdateFeed`). */
+	protected supportsStaticUpdateFeed(): boolean {
+		return false;
 	}
 
 	protected doQuitAndInstall(): void {

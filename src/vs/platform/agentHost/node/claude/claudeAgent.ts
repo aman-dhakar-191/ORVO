@@ -3,6 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import * as os from 'os';
 import type { CCAModel } from '@vscode/copilot-api';
 import type { ModelInfo, OnElicitation, Options, SDKSessionInfo, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
@@ -11,7 +12,7 @@ import { Limiter, retry, SequencerByKey } from '../../../../base/common/async.js
 import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { CancellationError } from '../../../../base/common/errors.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
-import { Disposable, DisposableMap, DisposableStore, IDisposable, IReference } from '../../../../base/common/lifecycle.js';
+import { Disposable, DisposableMap, DisposableStore, IDisposable, IReference, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { IObservable, observableValue } from '../../../../base/common/observable.js';
 import { extUriBiasedIgnorePathCase, isEqual } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
@@ -49,6 +50,9 @@ import { PendingRequestRegistry } from '../../common/pendingRequestRegistry.js';
 import { projectFromCopilotContext } from '../copilot/copilotGitProject.js';
 import { ICopilotApiService } from '../shared/copilotApiService.js';
 import { ClaudeSdkPackage, IClaudeAgentSdkService } from './claudeAgentSdkService.js';
+import { claudeAccountArgs, ClaudeSetupTokenProcess, ClaudeSignInProcess, CLAUDE_OAUTH_TOKEN_ENV, findClaudeExecutable, persistClaudeOauthToken } from './claudeSignIn.js';
+import { CLAUDE_ACCOUNT_META_KEY, CLAUDE_ACCOUNT_NATIVE_KEY, CLAUDE_ACCOUNT_SIGN_IN_CODE_KEY, CLAUDE_ACCOUNT_SIGN_IN_REQUEST_KEY, CLAUDE_ACCOUNT_SIGN_OUT_REQUEST_KEY, readClaudeSignInCode, readClaudeSignInRequest, type IClaudeAccountInfo } from '../../common/claudeAccount.js';
+import { AgentHostClaudeSdkRootEnvVar } from '../../common/agentService.js';
 import { buildModelEnumerationOptions } from './claudeSdkOptions.js';
 import { isClaudeAccountSetUp, resolveClaudeTransportMode, type ClaudeTransportMode } from './claudeTransportMode.js';
 import { mergeClaudeModelCatalogs, resolveClaudeSessionTransport } from './claudeModelSelection.js';
@@ -695,16 +699,160 @@ export class ClaudeAgent extends Disposable implements IAgent {
 		this._sdkSetupChannel = this._register(new AgentSdkSetupChannel({
 			id: this.id,
 			sdkPackage: ClaudeSdkPackage,
-			// Every Claude credential — subscription or `ANTHROPIC_API_KEY` — is
-			// established outside the app, and the SDK exposes no login control
-			// request, so the docs link is the only route this agent can offer.
-			setupInfo: { setupDocsUrl: CLAUDE_SETUP_DOCS_URL },
+			// The SDK exposes no login control request, so ORVO drives the SDK's own
+			// `claude auth login` (see _signIn); the docs link stays for API keys and
+			// third-party providers set up outside the app.
+			setupInfo: { setupDocsUrl: CLAUDE_SETUP_DOCS_URL, signInProviderName: 'Claude' },
 			isSdkLocal: () => this._sdkService.canLoadWithoutDownload(),
 			downloadSdk: () => this._sdkService.ensureAvailable(),
 			restartChatDiscovery: () => this._restartChatDiscovery(),
 			refreshModels: () => this._startModelRefresh(),
 		}, this._configurationService, this._agentSdkDownloader, this._logService));
+
+		this._register(this._configurationService.onDidRootConfigChange(() => this._handleAccountRequests()));
+		this._handleAccountRequests();
 	}
+
+	// #region In-app sign-in (ORVO)
+
+	private readonly _signInProcess = this._register(new MutableDisposable<ClaudeSignInProcess | ClaudeSetupTokenProcess>());
+	private _signInNonce: string | undefined;
+
+	/** Picks up sign-in, code and sign-out requests the workbench writes into root config, clearing each once read. */
+	private _handleAccountRequests(): void {
+		const values = this._configurationService.getRootConfigValues?.() ?? {};
+		const signIn = readClaudeSignInRequest(values[CLAUDE_ACCOUNT_SIGN_IN_REQUEST_KEY]);
+		if (values[CLAUDE_ACCOUNT_SIGN_IN_REQUEST_KEY] !== undefined) {
+			this._configurationService.updateRootConfig({ [CLAUDE_ACCOUNT_SIGN_IN_REQUEST_KEY]: undefined });
+		}
+		const code = readClaudeSignInCode(values[CLAUDE_ACCOUNT_SIGN_IN_CODE_KEY]);
+		if (values[CLAUDE_ACCOUNT_SIGN_IN_CODE_KEY] !== undefined) {
+			this._configurationService.updateRootConfig({ [CLAUDE_ACCOUNT_SIGN_IN_CODE_KEY]: undefined });
+		}
+		const signOut = values[CLAUDE_ACCOUNT_SIGN_OUT_REQUEST_KEY];
+		if (signOut !== undefined) {
+			this._configurationService.updateRootConfig({ [CLAUDE_ACCOUNT_SIGN_OUT_REQUEST_KEY]: undefined });
+		}
+
+		if (signIn) {
+			if (signIn.method === 'claudeai') {
+				// ORVO (personal use): the SDK does not use a `claude auth login` subscription login, only a token in
+				// CLAUDE_CODE_OAUTH_TOKEN, so get one from `claude setup-token` instead.
+				void this._runSetupToken(signIn.nonce);
+			} else {
+				void this._runAccountProcess(signIn.nonce, 'signedIn', claudeAccountArgs('signIn', signIn.method));
+			}
+		} else if (typeof signOut === 'string' && signOut) {
+			void persistClaudeOauthToken(undefined).catch(error => this._logService.warn(`[Claude] could not remove ${CLAUDE_OAUTH_TOKEN_ENV}: ${error}`));
+			void this._runAccountProcess(signOut, 'signedOut', claudeAccountArgs('signOut'));
+		}
+		if (code && code.nonce === this._signInNonce) {
+			this._signInProcess.value?.submitCode(code.code);
+		}
+	}
+
+	/** The SDK's own `claude` executable; downloads the SDK if needed (sign-in is often what first needs it). */
+	private async _resolveClaudeExecutable(): Promise<string> {
+		const override = process.env[AgentHostClaudeSdkRootEnvVar];
+		const sdkRoot = override || await this._agentSdkDownloader.loadSdkRoot(ClaudeSdkPackage, CancellationToken.None);
+		const executable = await findClaudeExecutable(sdkRoot);
+		if (!executable) {
+			throw new Error(`Claude executable not found in ${sdkRoot}`);
+		}
+		return executable;
+	}
+
+	/** `claude setup-token` in a pseudo-terminal: sign in in the browser, then keep the 1-year token it prints. */
+	private async _runSetupToken(nonce: string): Promise<void> {
+		this._signInNonce = nonce;
+		this._signInProcess.clear();
+		this._publishAccount({ status: 'starting', nonce });
+		try {
+			const executable = await this._resolveClaudeExecutable();
+			if (this._signInNonce !== nonce) {
+				return;
+			}
+			const pty = await import('node-pty');
+			const env: Record<string, string> = {};
+			for (const [key, value] of Object.entries(process.env)) {
+				if (value !== undefined && key !== CLAUDE_OAUTH_TOKEN_ENV) {
+					env[key] = value;
+				}
+			}
+			this._logService.info('[Claude] starting in-app subscription sign-in: claude setup-token');
+			// Wide enough that the sign-in URL and the token are never wrapped across lines.
+			const terminal = pty.spawn(executable, ['setup-token'], { name: 'xterm-256color', cols: 4000, rows: 50, cwd: os.homedir(), env });
+			const run = new ClaudeSetupTokenProcess({
+				onData: listener => terminal.onData(listener),
+				onExit: listener => terminal.onExit(listener),
+				write: data => terminal.write(data),
+				kill: () => terminal.kill(),
+			}, nonce);
+			run.onDidReport(info => this._publishAccount(info));
+			run.onDidExit(token => void this._afterSetupToken(nonce, token, run.error));
+			this._signInProcess.value = run;
+		} catch (error) {
+			this._logService.error(error, '[Claude] in-app subscription sign-in could not start');
+			this._publishAccount({ status: 'error', nonce, error: error instanceof Error ? error.message : String(error) });
+		}
+	}
+
+	private async _afterSetupToken(nonce: string, token: string | undefined, error: string | undefined): Promise<void> {
+		if (!token) {
+			this._publishAccount({ status: 'error', nonce, error });
+			return;
+		}
+		try {
+			await persistClaudeOauthToken(token);
+		} catch (persistError) {
+			// The token still works for this ORVO session (set in process.env); only the next start would lack it.
+			this._logService.warn(`[Claude] could not save ${CLAUDE_OAUTH_TOKEN_ENV} to the user environment: ${persistError}`);
+		}
+		this._logService.info(`[Claude] subscription token saved (${CLAUDE_OAUTH_TOKEN_ENV})`);
+		this._publishAccount({ status: 'signedIn', nonce });
+		this._afterAccountChange(true);
+	}
+
+	private async _runAccountProcess(nonce: string, successStatus: 'signedIn' | 'signedOut', args: readonly string[]): Promise<void> {
+		this._signInNonce = nonce;
+		this._signInProcess.clear();
+		this._publishAccount({ status: 'starting', nonce });
+		try {
+			const executable = await this._resolveClaudeExecutable();
+			if (this._signInNonce !== nonce) {
+				return; // superseded while the SDK was resolving
+			}
+			this._logService.info(`[Claude] starting in-app account flow: claude ${args.join(' ')}`);
+			const run = new ClaudeSignInProcess(nonce, successStatus);
+			run.onDidReport(info => this._publishAccount(info));
+			run.onDidExit(succeeded => this._afterAccountChange(succeeded));
+			this._signInProcess.value = run;
+			run.start(executable, args);
+		} catch (error) {
+			this._logService.error(error, '[Claude] in-app sign-in could not start');
+			this._publishAccount({ status: 'error', nonce, error: error instanceof Error ? error.message : String(error) });
+		}
+	}
+
+	/** Lets the chat banner offer Claude sign-in exactly when no Claude credentials were found. */
+	private _publishNativeAccount(signedIn: boolean): void {
+		this._configurationService.publishRootTransientValues?.({ [CLAUDE_ACCOUNT_NATIVE_KEY]: { signedIn } });
+	}
+
+	private _publishAccount(info: IClaudeAccountInfo): void {
+		this._configurationService.publishRootTransientValues?.({ [CLAUDE_ACCOUNT_META_KEY]: info });
+	}
+
+	/** A finished sign-in or sign-out changes what the SDK reports, so re-read the catalog and the account. */
+	private _afterAccountChange(succeeded: boolean): void {
+		this._logService.info(`[Claude] in-app account flow ${succeeded ? 'succeeded' : 'failed'}`);
+		if (succeeded) {
+			this._restartChatDiscovery();
+			void this._startModelRefresh();
+		}
+	}
+
+	// #endregion
 
 	/**
 	 * Publishes whether the SDK is on disk — and deliberately nothing about the
@@ -946,6 +1094,7 @@ export class ClaudeAgent extends Disposable implements IAgent {
 		if (!canAttemptNative) {
 			// No SDK, so no evidence of an account — say so rather than retaining a stale `true`.
 			this._nativeAccountSetUp = false;
+			this._publishNativeAccount(false);
 		}
 		const [proxyOutcome, nativeOutcome] = await Promise.allSettled([
 			tokenAtStart ? this._fetchProxyModels(tokenAtStart) : Promise.resolve<readonly IAgentModelInfo[]>([]),
@@ -1011,6 +1160,7 @@ export class ClaudeAgent extends Disposable implements IAgent {
 			const [account, models] = await Promise.all([query.accountInfo(), query.supportedModels()]);
 			const setUp = isClaudeAccountSetUp(account);
 			this._nativeAccountSetUp = setUp;
+			this._publishNativeAccount(setUp);
 			// Origin only — never the credential itself.
 			this._logService.info(`[Claude] Native account check: setUp=${setUp}, provider=${account.apiProvider ?? 'none'}, tokenSource=${account.tokenSource ?? 'absent'}, apiKeySource=${account.apiKeySource ?? 'absent'}`);
 			if (!setUp) {

@@ -33,6 +33,7 @@ import { IProductService } from '../../product/common/productService.js';
 import { asJson, IRequestService } from '../../request/common/request.js';
 import { IApplicationStorageMainService } from '../../storage/electron-main/storageMainService.js';
 import { ITelemetryService } from '../../telemetry/common/telemetry.js';
+import { createStaticUpdateURL, isNewerStaticFeedUpdate } from '../common/staticUpdateFeed.js';
 import { AvailableForDownload, DisablementReason, IUpdate, State, StateType, UpdateType } from '../common/update.js';
 import { AbstractUpdateService, createUpdateURL, getUpdateRequestHeaders, IUpdateURLOptions, UpdateErrorClassification } from './abstractUpdateService.js';
 import { getRelaunchArguments } from './updateRelaunchArguments.js';
@@ -214,6 +215,10 @@ export class Win32UpdateService extends AbstractUpdateService implements IRelaun
 			platform += '-user';
 		}
 
+		if (this.productService.staticUpdateFeed) {
+			return createStaticUpdateURL(this.productService.updateUrl!, platform, quality);
+		}
+
 		return createUpdateURL(this.productService.updateUrl!, platform, quality, commit, options);
 	}
 
@@ -224,7 +229,8 @@ export class Win32UpdateService extends AbstractUpdateService implements IRelaun
 
 		const internalOrg = this.getInternalOrg();
 		const background = !explicit && !internalOrg;
-		const url = this.buildUpdateFeedUrl(this.quality, pendingCommit ?? this.productService.commit!, { background, internalOrg });
+		const commit = pendingCommit ?? this.productService.commit!;
+		const url = this.buildUpdateFeedUrl(this.quality, commit, { background, internalOrg });
 
 		// Only set CheckingForUpdates if we're not already in Overwriting state
 		if (this.state.type !== StateType.Overwriting) {
@@ -240,6 +246,11 @@ export class Win32UpdateService extends AbstractUpdateService implements IRelaun
 		const promise = this.requestService.request({ url, headers, callSite: 'updateService.win32.checkForUpdates' }, token)
 			.then<IUpdate | null>(asJson)
 			.then(update => {
+				// A static feed always describes the latest build; ignore it unless it is newer than what we have.
+				if (this.productService.staticUpdateFeed && !isNewerStaticFeedUpdate(update, commit, this.productService.version)) {
+					update = null;
+				}
+
 				const updateType = this.getUpdateType();
 
 				if (token.isCancellationRequested) {
@@ -702,6 +713,10 @@ export class Win32UpdateService extends AbstractUpdateService implements IRelaun
 
 	protected override getUpdateType(): UpdateType {
 		return getWin32UpdateType(this.productService.target);
+	}
+
+	protected override supportsStaticUpdateFeed(): boolean {
+		return true;
 	}
 
 	override async _applySpecificUpdate(packagePath: string, commit?: string): Promise<void> {

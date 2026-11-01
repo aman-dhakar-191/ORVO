@@ -262,6 +262,7 @@ export class BrowserTitlebarPart extends Part implements ITitlebarPart {
 	private title!: HTMLElement;
 
 	private leftContent!: HTMLElement;
+	private leftActionsElement: HTMLElement | undefined;
 	private centerContent!: HTMLElement;
 	private rightContent!: HTMLElement;
 
@@ -426,7 +427,9 @@ export class BrowserTitlebarPart extends Part implements ITitlebarPart {
 		const customMenubar = this.instantiationService.createInstance(CustomMenubarControl);
 		this.customMenubar.value = customMenubar;
 
-		this.menubar = append(this.leftContent, $('div.menubar'));
+		// Keep the menu bar before the extension actions when it is reinstalled
+		this.menubar = $('div.menubar');
+		this.leftContent.insertBefore(this.menubar, this.leftActionsElement ?? null);
 		this.menubar.setAttribute('role', 'menubar');
 
 		this.customMenubarDisposables.add(customMenubar.onVisibilityChange(e => this.onMenubarVisibilityChanged(e)));
@@ -490,6 +493,17 @@ export class BrowserTitlebarPart extends Part implements ITitlebarPart {
 			this.currentMenubarVisibility !== 'compact'
 		) {
 			this.installMenubar();
+		}
+
+		// Extension actions after the menu bar (`titleBar/left` menu contribution)
+		if (hasCustomTitlebar(this.configurationService, this.titleBarStyle) && !this.isAuxiliary) {
+			this.leftActionsElement = append(this.leftContent, $('div.titlebar-left-actions'));
+			this._register(this.instantiationService.createInstance(MenuWorkbenchToolBar, this.leftActionsElement, MenuId.TitleBarLeft, {
+				hiddenItemStrategy: HiddenItemStrategy.NoHide,
+				toolbarOptions: { primaryGroup: () => true },
+				telemetrySource: 'titleBarLeft',
+				hoverDelegate: this.hoverDelegate
+			}));
 		}
 
 		// Title

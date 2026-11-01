@@ -127,6 +127,11 @@ export interface IProductConfiguration {
 
 	readonly downloadUrl?: string;
 	readonly updateUrl?: string;
+	/**
+	 * When true, `updateUrl` points at a folder of static JSON files, one per platform and quality
+	 * (`<updateUrl>/<platform>-<quality>.json`), each describing the latest build, instead of an update server.
+	 */
+	readonly staticUpdateFeed?: boolean;
 	readonly webUrl?: string;
 	readonly webEndpointUrlTemplate?: string;
 	readonly webviewContentExternalBaseUrlTemplate?: string;

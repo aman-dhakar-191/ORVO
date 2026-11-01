@@ -1,0 +1,354 @@
+name: Release (Windows)
+
+# Branch model:
+# - main   : development branch. Every push publishes an internal-testing pre-release.
+#            A running build always finishes; pushes made meanwhile are built once, from the newest.
+# - stable : release branch. Every push (a merge from main) publishes a stable release,
+#            marked as the latest release.
+# Manual runs on any other branch build the installer and, if 'publish' is ticked, publish it
+# as an internal pre-release.
+#
+# Versioning (stamped into package.json / product.json at build time, never committed):
+#   base     = major.minor from package.json (the VS Code base, kept for extension compatibility)
+#   stable   : <major>.<minor>.<run>            quality "stable"   tag v<version>
+#   internal : <major>.<minor>.<run>-internal   quality "internal" tag v<version>
+# GITHUB_RUN_NUMBER is shared by both branches, so every build has a higher version than the
+# builds before it. The update service compares these as semver, and finds the releases of its
+# own quality by the tag (no suffix for stable, "-internal" for internal).
+
+on:
+  push:
+    branches:
+      - main
+      - stable
+    paths-ignore:
+      - '**/*.md'
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish a GitHub release (stable on the stable branch, internal pre-release elsewhere)
+        type: boolean
+        default: true
+
+permissions: {}
+
+concurrency:
+  group: release-win32-${{ github.ref }}
+  # Never cancel a running build (a full package takes 1-2 hours, so frequent pushes would starve it).
+  # GitHub keeps only the newest pending run per group, so intermediate pushes are skipped instead.
+  cancel-in-progress: false
+
+env:
+  VSCODE_ARCH: x64
+  NPM_ARCH: x64
+
+jobs:
+  build:
+    name: Build Windows x64 setup
+    runs-on: windows-latest
+    timeout-minutes: 360
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      tag: ${{ steps.meta.outputs.tag }}
+      channel: ${{ steps.meta.outputs.channel }}
+      filename: ${{ steps.setup-exe.outputs.filename }}
+      size: ${{ steps.setup-exe.outputs.size }}
+      sha256: ${{ steps.setup-exe.outputs.sha256 }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          lfs: true
+
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+
+      - name: Compute release metadata
+        id: meta
+        shell: pwsh
+        run: |
+          $base = node -p "require('./package.json').version.split('.').slice(0, 2).join('.')"
+          $baseVersion = "$base.$env:GITHUB_RUN_NUMBER"
+          if ("${{ github.ref }}" -eq "refs/heads/stable") {
+            $quality = "stable"
+            $version = $baseVersion
+          } else {
+            $quality = "internal"
+            $version = "$baseVersion-internal"
+          }
+          "base_version=$baseVersion" >> $env:GITHUB_OUTPUT
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "channel=$quality" >> $env:GITHUB_OUTPUT
+          "tag=v$version" >> $env:GITHUB_OUTPUT
+          Write-Host "Version $version, quality $quality, tag v$version"
+
+      # Same cache as pr-node-modules.yml / pr-win32-test.yml, so main warms it for stable.
+      - name: Restore node_modules cache
+        id: cache-node-modules
+        uses: ./.github/actions/restore-node-modules
+        with:
+          key-prefix: node_modules-windows
+          key-args: "win32 ${{ env.VSCODE_ARCH }} $(node -p process.arch)"
+
+      - name: Install dependencies
+        if: steps.cache-node-modules.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          . build/azure-pipelines/win32/exec.ps1
+          $ErrorActionPreference = "Stop"
+
+          # Patch Electron/v8 headers before native modules are built.
+          exec { node build/npm/preinstall.ts }
+
+          for ($i = 1; $i -le 5; $i++) {
+            try {
+              exec { npm ci }
+              break
+            }
+            catch {
+              if ($i -eq 5) {
+                Write-Error "npm ci failed after 5 attempts"
+                throw
+              }
+              Write-Host "npm ci failed attempt $i, retrying..."
+              Start-Sleep -Seconds 5
+            }
+          }
+        env:
+          npm_config_arch: ${{ env.NPM_ARCH }}
+          npm_config_foreground_scripts: "true"
+          VSCODE_ARCH: ${{ env.VSCODE_ARCH }}
+          ELECTRON_SKIP_BINARY_DOWNLOAD: 1
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Save node_modules cache
+        if: steps.cache-node-modules.outputs.cache-hit != 'true'
+        uses: ./.github/actions/save-node-modules
+
+      # After npm ci, so the install and the node_modules cache key see the committed files.
+      # The packaging appends "-<quality>" to package.json's version for non-stable qualities.
+      - name: Stamp version and quality
+        shell: pwsh
+        run: |
+          node -e "
+            const fs = require('fs');
+            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+            pkg.version = process.env.BASE_VERSION;
+            fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+            const product = JSON.parse(fs.readFileSync('product.json', 'utf8'));
+            product.quality = process.env.QUALITY;
+            fs.writeFileSync('product.json', JSON.stringify(product, null, '\t') + '\n');
+          "
+          Write-Host "package.json version: $(node -p "require('./package.json').version")"
+          Write-Host "product.json quality: $(node -p "require('./product.json').quality")"
+        env:
+          BASE_VERSION: ${{ steps.meta.outputs.base_version }}
+          QUALITY: ${{ steps.meta.outputs.channel }}
+
+      - name: Prepare Electron types
+        shell: pwsh
+        run: node build/npm/electronTypes.ts
+
+      # The built-in Claude and Codex agents download their SDK on first use from product.agentSdks.
+      # Microsoft builds these tarballs from the pinned versions in build/agent-sdk/agents and hosts them on
+      # its CDN; ORVO builds the same tarballs and hosts them on the rolling 'agent-sdks' GitHub release
+      # (uploaded by the release job, before the installer is published). The gulp build stamps the
+      # results file into product.json.
+      - name: Produce agent SDKs
+        shell: pwsh
+        run: |
+          . build/azure-pipelines/win32/exec.ps1
+          $ErrorActionPreference = "Stop"
+          exec { node build/agent-sdk/produce.ts --vscode-platform=win32 --arch=$env:VSCODE_ARCH }
+          $suffix = "-win32-$env:VSCODE_ARCH.tgz"
+          $results = [ordered]@{}
+          foreach ($tgz in Get-ChildItem .build/agent-sdk/tarballs -Filter *.tgz) {
+            # produce.ts names them {sdk}-{version}-{sdkTarget}.tgz; SDK ids have no '-'
+            if (-not $tgz.Name.EndsWith($suffix)) { throw "Unexpected agent SDK tarball $($tgz.Name)" }
+            $sdk, $version = $tgz.Name.Substring(0, $tgz.Name.Length - $suffix.Length).Split('-', 2)
+            $results[$sdk] = [ordered]@{
+              version = $version
+              urlTemplate = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/agent-sdks/$sdk-$version-{sdkTarget}.tgz"
+            }
+          }
+          if ($results.Count -eq 0) { throw "produce.ts built no agent SDK tarballs" }
+          $file = Join-Path $PWD '.build/agent-sdk/results.json'
+          $results | ConvertTo-Json -Depth 3 | Set-Content -Encoding utf8NoBOM $file
+          Get-Content $file
+          "AGENT_SDK_RESULTS_FILE=$file" >> $env:GITHUB_ENV
+
+      - name: Upload agent SDK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: orvo-agent-sdks-win32-${{ env.VSCODE_ARCH }}
+          path: .build/agent-sdk/tarballs/*.tgz
+          retention-days: 30
+          if-no-files-found: error
+
+      # Compiles the built-in extensions, bundles + minifies the workbench (esbuild),
+      # downloads Electron and assembles ..\VSCode-win32-x64.
+      - name: Build client (minified)
+        shell: pwsh
+        run: |
+          . build/azure-pipelines/win32/exec.ps1
+          $ErrorActionPreference = "Stop"
+          # signtool.exe is used to strip signatures from bundled native binaries.
+          $sdk = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Directory -Filter "10.*" |
+            Sort-Object Name -Descending | Select-Object -First 1
+          if ($sdk) { $env:PATH = "$($sdk.FullName)\x64;$env:PATH" }
+          exec { npm run gulp "vscode-win32-$env:VSCODE_ARCH-min" }
+          exec { npm run gulp "vscode-win32-$env:VSCODE_ARCH-inno-updater" }
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Package user setup (Inno Setup)
+        shell: pwsh
+        run: |
+          . build/azure-pipelines/win32/exec.ps1
+          $ErrorActionPreference = "Stop"
+          exec { npm run gulp "vscode-win32-$env:VSCODE_ARCH-user-setup" }
+
+      - name: Locate setup executable
+        id: setup-exe
+        shell: pwsh
+        run: |
+          $dir = ".build\win32-$env:VSCODE_ARCH\user-setup"
+          $exe = Get-ChildItem -Path $dir -Filter "*.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $exe) {
+            Write-Error "No setup .exe found in $dir"
+            exit 1
+          }
+          $name = "ORVO-UserSetup-$env:VSCODE_ARCH-${{ steps.meta.outputs.version }}.exe"
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item $exe.FullName "dist\$name"
+          $hash = (Get-FileHash "dist\$name" -Algorithm SHA256).Hash.ToLower()
+          "$hash  $name" | Out-File -Encoding ascii "dist\$name.sha256"
+          "filename=$name" >> $env:GITHUB_OUTPUT
+          "size=$([math]::Round($exe.Length / 1MB, 2))" >> $env:GITHUB_OUTPUT
+          "sha256=$hash" >> $env:GITHUB_OUTPUT
+
+      - name: Upload setup artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: orvo-win32-${{ env.VSCODE_ARCH }}-setup
+          path: dist/*
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Build summary
+        if: always()
+        shell: pwsh
+        run: |
+          @"
+          ## ORVO Windows build
+          | | |
+          |---|---|
+          | Quality | ${{ steps.meta.outputs.channel }} |
+          | Version | ${{ steps.meta.outputs.version }} |
+          | Tag | ${{ steps.meta.outputs.tag }} |
+          | Commit | ${{ github.sha }} |
+          | Setup | ${{ steps.setup-exe.outputs.filename }} (${{ steps.setup-exe.outputs.size }} MB) |
+          "@ >> $env:GITHUB_STEP_SUMMARY
+
+  release:
+    name: Publish GitHub release
+    needs: build
+    if: github.event_name == 'push' || inputs.publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download setup artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: orvo-win32-x64-setup
+          path: dist
+
+      - name: Download agent SDK artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: orvo-agent-sdks-win32-x64
+          path: agent-sdks
+
+      # Before the installer is published, so product.agentSdks never points at a missing file.
+      # Tarballs are per SDK version, so they are only uploaded when an SDK version changes.
+      - name: Publish agent SDKs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if ! gh release view agent-sdks > /dev/null 2>&1; then
+            gh release create agent-sdks --prerelease --latest=false --target "$COMMIT" \
+              --title "Agent SDKs" \
+              --notes "Claude and Codex agent SDKs downloaded by installed ORVO builds (product.agentSdks). Do not delete."
+          fi
+          existing="$(gh release view agent-sdks --json assets --jq '.assets[].name')"
+          for tgz in agent-sdks/*.tgz; do
+            name="$(basename "$tgz")"
+            if grep -qxF "$name" <<< "$existing"; then
+              echo "$name already published"
+            else
+              gh release upload agent-sdks "$tgz"
+            fi
+          done
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.build.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: ORVO ${{ needs.build.outputs.version }}
+          prerelease: ${{ needs.build.outputs.channel != 'stable' }}
+          make_latest: ${{ needs.build.outputs.channel == 'stable' }}
+          generate_release_notes: true
+          files: dist/*
+          body: |
+            **Quality:** ${{ needs.build.outputs.channel }}
+            **Branch:** `${{ github.ref_name }}`
+            **Commit:** ${{ github.sha }}
+            **Installer:** `${{ needs.build.outputs.filename }}` (${{ needs.build.outputs.size }} MB, Windows x64, per-user)
+
+            Verify the download with the `.sha256` file attached below.
+            The installer is not code-signed yet, so Windows SmartScreen will warn on first run.
+            ${{ needs.build.outputs.channel != 'stable' && '> ⚠️ Internal testing build from a development branch. Not for general use.' || '' }}
+
+      # The app reads <updateUrl>/<platform>-<quality>.json (product.json: updateUrl, staticUpdateFeed).
+      # The feed is updated only after the release above exists, so it never points at a missing file.
+      # Roll back by uploading an older feed file; clients still only take newer versions.
+      - name: Update the update feed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.build.outputs.tag }}
+          QUALITY: ${{ needs.build.outputs.channel }}
+          FILENAME: ${{ needs.build.outputs.filename }}
+          PRODUCT_VERSION: ${{ needs.build.outputs.version }}
+          SHA256: ${{ needs.build.outputs.sha256 }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          feed="win32-x64-user-${QUALITY}.json"
+          jq -n \
+            --arg version "$COMMIT" \
+            --arg productVersion "$PRODUCT_VERSION" \
+            --arg url "https://github.com/${GH_REPO}/releases/download/${TAG}/${FILENAME}" \
+            --arg sha256hash "$SHA256" \
+            --argjson timestamp "$(date +%s000)" \
+            '{version: $version, productVersion: $productVersion, url: $url, sha256hash: $sha256hash, timestamp: $timestamp}' \
+            > "$feed"
+          cat "$feed"
+
+          if ! gh release view update-feed > /dev/null 2>&1; then
+            gh release create update-feed --prerelease --latest=false --target "$COMMIT" \
+              --title "Update feed" \
+              --notes "Update metadata read by installed ORVO builds. Do not delete."
+          fi
+          gh release upload update-feed "$feed" --clobber

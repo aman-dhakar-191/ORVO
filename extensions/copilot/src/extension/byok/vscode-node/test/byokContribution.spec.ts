@@ -80,11 +80,12 @@ describe('BYOKContrib', () => {
 		onDidCopilotTokenChange.dispose();
 		const voiceLiveProviders = speechEnabled ? 1 : 0;
 		expect({ states, errors: logError.mock.calls }).toEqual({
+			// ORVO: BYOK stays registered while the Copilot token is missing (see isClientBYOKAllowed)
 			states: [
-				{ languageModelProviders: 0, voiceLiveProviders },
-				{ languageModelProviders: 9, voiceLiveProviders },
-				{ languageModelProviders: 9, voiceLiveProviders },
-				{ languageModelProviders: 0, voiceLiveProviders },
+				{ languageModelProviders: 10, voiceLiveProviders },
+				{ languageModelProviders: 10, voiceLiveProviders },
+				{ languageModelProviders: 10, voiceLiveProviders },
+				{ languageModelProviders: 10, voiceLiveProviders },
 				{ languageModelProviders: 0, voiceLiveProviders: 0 },
 			],
 			errors: speechEnabled ? [] : [[registrationError, 'BYOK: failed to register GPT-Live voice provider.']],

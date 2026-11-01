@@ -24,6 +24,7 @@ import { createTsgoStream, spawnTsgo } from './tsgo.ts';
 import watcher from './watch/index.ts';
 
 import { createRequire } from 'module';
+import { rebrandPackageNls } from './rebrand.ts';
 const require = createRequire(import.meta.url);
 
 const root = path.dirname(path.dirname(import.meta.dirname));
@@ -37,8 +38,11 @@ function minifyExtensionResources(input: Stream): Stream {
 		.pipe(buffer())
 		.pipe(es.mapSync((f: File) => {
 			const errors: jsoncParser.ParseError[] = [];
-			const value = jsoncParser.parse(f.contents!.toString('utf8'), errors, { allowTrailingComma: true });
+			let value = jsoncParser.parse(f.contents!.toString('utf8'), errors, { allowTrailingComma: true });
 			if (errors.length === 0) {
+				if (path.basename(f.path) === 'package.nls.json') {
+					value = rebrandPackageNls(value); // English strings of the extension's contributions
+				}
 				// file parsed OK => just stringify to drop whitespace and comments
 				f.contents = Buffer.from(JSON.stringify(value));
 			}
@@ -479,11 +483,22 @@ export function packageCopilotExtensionStream(): Stream {
 	const productionDependencies = getProductionDependencies('extensions/copilot');
 	const dependenciesSrc = productionDependencies.map(d => path.relative(root, d)).map(d => [`${d}/**`, `!${d}/**/{test,tests}/**`]).flat();
 
+	// build/.moduleignore strips @github/copilot, which is right for the app's own node_modules but would also
+	// remove the SDK this extension runs on (its postinstall copies it into @github/copilot/sdk). Add back what
+	// the Copilot VSIX ships (see extensions/copilot/.vscodeignore); packaging later prunes other platforms' natives.
+	// The extension's build (.esbuild.mts) re-runs that postinstall and rewrites the SDK folder, so it is only read
+	// once the build is done.
+	const copilotPackage = 'extensions/copilot/node_modules/@github/copilot';
+	const copilotSdkSrc = [`${copilotPackage}/package.json`, `${copilotPackage}/sdk/**`];
+	const copilotSdkStream = es.through();
+	localExtensionsStream.once('end', () => gulp.src(copilotSdkSrc, { base: '.', dot: true, allowEmpty: true }).pipe(copilotSdkStream));
+
 	return es.merge(
 		localExtensionsStream,
 		gulp.src(dependenciesSrc, { base: '.' })
 			.pipe(util2.cleanNodeModules(path.join(root, 'build', '.moduleignore')))
-			.pipe(util2.cleanNodeModules(path.join(root, 'build', `.moduleignore.${process.platform}`)))
+			.pipe(util2.cleanNodeModules(path.join(root, 'build', `.moduleignore.${process.platform}`))),
+		copilotSdkStream
 	).pipe(util2.setExecutableBit(['**/*.sh']));
 }
 
@@ -631,6 +646,7 @@ const esbuildMediaScripts: { script: string; tsconfig: string }[] = [
 	{ script: 'mermaid-markdown-features/esbuild.webview.mts', tsconfig: 'mermaid-markdown-features/preview-src/tsconfig.json' },
 	{ script: 'notebook-renderers/esbuild.notebook.mts', tsconfig: 'notebook-renderers/tsconfig.json' },
 	{ script: 'simple-browser/esbuild.webview.mts', tsconfig: 'simple-browser/preview-src/tsconfig.json' },
+	{ script: 'orvo-memory/esbuild.webview.mts', tsconfig: 'orvo-memory/editor-src/tsconfig.json' },
 ];
 
 export function buildExtensionMedia(isWatch: boolean, outputRoot?: string): Promise<void> {

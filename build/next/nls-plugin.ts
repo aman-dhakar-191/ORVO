@@ -14,6 +14,7 @@ import {
 } from '../lib/nls-analysis.ts';
 import { serializeNlsData } from '../lib/nlsMessages.ts';
 import type { TextEdit } from './private-to-property.ts';
+import { rebrandMessage } from '../lib/rebrand.ts';
 
 // ============================================================================
 // Types
@@ -96,7 +97,8 @@ export async function finalizeNLS(
 	const moduleToMessages: Map<string, string[]> = new Map();
 
 	for (const entry of sortedEntries) {
-		allMessages.push(entry.message);
+		// The shipped English messages use the product name; nls.metadata.json keeps the source text for translators
+		allMessages.push(rebrandMessage(entry.message));
 
 		if (!moduleToKeys.has(entry.moduleId)) {
 			moduleToKeys.set(entry.moduleId, []);

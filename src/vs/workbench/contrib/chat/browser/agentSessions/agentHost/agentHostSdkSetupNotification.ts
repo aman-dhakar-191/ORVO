@@ -6,7 +6,7 @@
 import { Disposable, DisposableStore } from '../../../../../../base/common/lifecycle.js';
 import { Event } from '../../../../../../base/common/event.js';
 import { createCommandUri, escapeMarkdownSyntaxTokens, IMarkdownString, MarkdownString } from '../../../../../../base/common/htmlContent.js';
-import { localize } from '../../../../../../nls.js';
+import { localize, localize2 } from '../../../../../../nls.js';
 import { IAgentHostService } from '../../../../../../platform/agentHost/common/agentService.js';
 import { LOCAL_AGENT_HOST_SCHEME_PREFIX } from '../../../../../../platform/agentHost/common/agentHostConnectionsService.js';
 import type { AgentSdkDownloadStatus, IAgentSdkSetupInfo } from '../../../../../../platform/agentHost/common/agentSdkSetup.js';
@@ -17,6 +17,8 @@ import { ServicesAccessor } from '../../../../../../platform/instantiation/commo
 import { IWorkbenchContribution } from '../../../../../common/contributions.js';
 import { IAgentSdkSetupService, type AgentSdkSetupState } from '../../../../../services/agentHost/browser/agentSdkSetupService.js';
 import { ICodexAccountService } from '../../../../../services/agentHost/browser/codexAccountService.js';
+import { IClaudeAccountService } from '../../../../../services/agentHost/browser/claudeAccountService.js';
+import { Action2, registerAction2 } from '../../../../../../platform/actions/common/actions.js';
 import { ChatEntitlement, IChatEntitlementService } from '../../../../../services/chat/common/chatEntitlementService.js';
 import { hasAnyModelTargetingSessionType } from '../sessionTypeAvailability.js';
 import { ChatInputNotificationActionKind, ChatInputNotificationSeverity, IChatInputNotification, IChatInputNotificationAction, IChatInputNotificationService } from '../../widget/input/chatInputNotificationService.js';
@@ -91,6 +93,23 @@ export function getAgentSdkSetupStateToReport(previous: AgentSdkSetupState | und
 // #endregion
 
 // #region Banner
+
+/** A sign-in button that runs its own command, for agents with more than one in-app sign-in route. */
+export interface IAgentSignInAction {
+	readonly label: string;
+	readonly commandId: string;
+	readonly commandArgs: readonly unknown[];
+}
+
+export const CLAUDE_SIGN_IN_WITH_COMMAND_ID = 'workbench.action.chat.agentHost.claude.signInWith';
+
+/** ORVO: the Claude banner's two sign-in buttons; the last one is styled primary. */
+function claudeSignInActions(): readonly IAgentSignInAction[] {
+	return [
+		{ label: localize('claude.banner.console', "Anthropic Console"), commandId: CLAUDE_SIGN_IN_WITH_COMMAND_ID, commandArgs: ['console'] },
+		{ label: localize('claude.banner.subscription', "Claude Account"), commandId: CLAUDE_SIGN_IN_WITH_COMMAND_ID, commandArgs: ['claudeai'] },
+	];
+}
 
 /** Trusted for the commands its links address, and nothing else. */
 function setupMarkdown(value: string): MarkdownString {
@@ -189,7 +208,7 @@ export function hasAgentSdkSetupForSessionType(setups: readonly IAgentSdkSetupIn
  * never tie the SDK to an account: it is the same SDK behind the Copilot proxy,
  * a subscription or a BYO key.
  */
-export function createAgentSdkSetupNotification(setup: IAgentSdkSetupInfo, displayName: string, state: AgentSdkSetupState | undefined, hasModels = false, includeGitHubSignIn = true): IChatInputNotification | undefined {
+export function createAgentSdkSetupNotification(setup: IAgentSdkSetupInfo, displayName: string, state: AgentSdkSetupState | undefined, hasModels = false, includeGitHubSignIn = true, agentSignInActions?: readonly IAgentSignInAction[]): IChatInputNotification | undefined {
 	// Nothing to ask of a user who is already set up. An empty `displayName` means
 	// the host has not described this agent yet, and "Download the  Agent" is worse
 	// than none; the next root-state change is moments away.
@@ -221,7 +240,12 @@ export function createAgentSdkSetupNotification(setup: IAgentSdkSetupInfo, displ
 		};
 	}
 	const actions: IChatInputNotificationAction[] = [];
-	if (setup.signInProviderName) {
+	if (agentSignInActions?.length) {
+		// An agent with several in-app sign-in routes (ORVO: Claude account or Anthropic Console) offers each directly.
+		for (const signIn of agentSignInActions) {
+			actions.push({ kind: ChatInputNotificationActionKind.Command, label: signIn.label, commandId: signIn.commandId, commandArgs: [...signIn.commandArgs], keepOpen: true });
+		}
+	} else if (setup.signInProviderName) {
 		actions.push(action(localize('agentHost.sdkSetup.signInAction', "Sign in to {0}", setup.signInProviderName), AGENT_SDK_SETUP_SIGN_IN_COMMAND_ID));
 	}
 	if (includeGitHubSignIn) {
@@ -266,6 +290,32 @@ registerAgentSdkSetupCommand(AGENT_SDK_SETUP_RELOAD_COMMAND_ID, (setupService, a
 registerAgentSdkSetupCommand(AGENT_SDK_SETUP_GITHUB_SIGN_IN_COMMAND_ID, (setupService, agent) => setupService.signInToGitHub(agent));
 registerAgentSdkSetupCommand(AGENT_SDK_SETUP_SIGN_IN_COMMAND_ID, (setupService, agent) => setupService.signIn(agent));
 
+CommandsRegistry.registerCommand(CLAUDE_SIGN_IN_WITH_COMMAND_ID, (accessor: ServicesAccessor, method: unknown) => {
+	if (method === 'claudeai' || method === 'console') {
+		return accessor.get(IClaudeAccountService).signIn(method);
+	}
+	return undefined;
+});
+
+// ORVO: the Claude account outside the setup banner, e.g. to switch accounts or sign out.
+registerAction2(class extends Action2 {
+	constructor() {
+		super({ id: 'workbench.action.chat.agentHost.claude.signIn', title: localize2('claude.signInCommand', "Sign In to Claude"), category: localize2('claude.category', "Claude"), f1: true });
+	}
+	run(accessor: ServicesAccessor): Promise<void> {
+		return accessor.get(IClaudeAccountService).signIn();
+	}
+});
+
+registerAction2(class extends Action2 {
+	constructor() {
+		super({ id: 'workbench.action.chat.agentHost.claude.signOut', title: localize2('claude.signOutCommand', "Sign Out of Claude"), category: localize2('claude.category', "Claude"), f1: true });
+	}
+	run(accessor: ServicesAccessor): Promise<void> {
+		return accessor.get(IClaudeAccountService).signOut();
+	}
+});
+
 // #endregion
 
 /**
@@ -294,9 +344,11 @@ export class AgentHostSdkSetupNotificationContribution extends Disposable implem
 		@IChatEntitlementService private readonly _chatEntitlementService: IChatEntitlementService,
 		@IAgentHostService private readonly _agentHostService: IAgentHostService,
 		@ICodexAccountService private readonly _codexAccountService: ICodexAccountService,
+		@IClaudeAccountService private readonly _claudeAccountService: IClaudeAccountService,
 	) {
 		super();
 		this._register(Event.any(
+			this._claudeAccountService.onDidChangeAccount,
 			this._agentSdkSetupService.onDidChangeSetups,
 			this._chatEntitlementService.onDidChangeEntitlement,
 			this._defaultAccountService.onDidChangeDefaultAccount,
@@ -332,13 +384,19 @@ export class AgentHostSdkSetupNotificationContribution extends Disposable implem
 			}
 			const hasModels = hasAnyModelTargetingSessionType(this._languageModelsService, agentSdkSetupSessionType(setup.agent));
 			const codexAccount = this._codexAccountService.account;
-			const agentAccountState = setup.agent !== this._codexAccountService.agent
-				? undefined
-				: codexAccount.status === 'signedOut' || codexAccount.status === 'error'
-					? 'needsSignIn'
-					: codexAccount.status === 'signedIn'
-						? 'available'
-						: 'unresolved';
+			const isClaude = setup.agent === this._claudeAccountService.agent;
+			const claudeSignedIn = this._claudeAccountService.nativeSignedIn;
+			const agentAccountState = isClaude
+				// ORVO: Claude has its own sign-in, so offer it whenever no Claude credentials were found,
+				// whether or not the user is signed in to GitHub.
+				? (claudeSignedIn === false ? 'needsSignIn' : claudeSignedIn === true ? 'available' : 'unresolved')
+				: setup.agent !== this._codexAccountService.agent
+					? undefined
+					: codexAccount.status === 'signedOut' || codexAccount.status === 'error'
+						? 'needsSignIn'
+						: codexAccount.status === 'signedIn'
+							? 'available'
+							: 'unresolved';
 			const state = getAgentSdkSetupState({
 				signedIn,
 				entitlementResolved,
@@ -354,7 +412,7 @@ export class AgentHostSdkSetupNotificationContribution extends Disposable implem
 				this._lastReported.set(setup.agent, toReport);
 				this._agentSdkSetupService.reportSetupState(setup.agent, toReport);
 			}
-			const notification = createAgentSdkSetupNotification(setup, displayName, state, hasModels, !signedIn);
+			const notification = createAgentSdkSetupNotification(setup, displayName, state, hasModels, !signedIn, isClaude ? claudeSignInActions() : undefined);
 			if (!notification) {
 				continue;
 			}
