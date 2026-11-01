@@ -1,0 +1,203 @@
+{
+  "name": "orvo-memory",
+  "publisher": "vscode",
+  "displayName": "%displayName%",
+  "description": "%description%",
+  "icon": "media/icon.png",
+  "version": "10.0.0",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": [
+    "AI",
+    "Other"
+  ],
+  "capabilities": {
+    "virtualWorkspaces": true,
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "%untrusted%"
+    }
+  },
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension",
+  "scripts": {
+    "compile": "gulp compile-extension:orvo-memory",
+    "watch": "gulp watch-extension:orvo-memory"
+  },
+  "contributes": {
+    "configuration": {
+      "title": "%config.title%",
+      "properties": {
+        "orvoMemory.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "%config.enabled%"
+        },
+        "orvoMemory.frequency": {
+          "type": "string",
+          "enum": [
+            "manual",
+            "hourly",
+            "daily",
+            "weekly"
+          ],
+          "enumDescriptions": [
+            "%config.frequency.manual%",
+            "%config.frequency.hourly%",
+            "%config.frequency.daily%",
+            "%config.frequency.weekly%"
+          ],
+          "default": "daily",
+          "description": "%config.frequency%"
+        },
+        "orvoMemory.model.vendor": {
+          "type": "string",
+          "default": "",
+          "description": "%config.model.vendor%"
+        },
+        "orvoMemory.model.id": {
+          "type": "string",
+          "default": "",
+          "description": "%config.model.id%"
+        },
+        "orvoMemory.learnFromCommits": {
+          "type": "boolean",
+          "default": true,
+          "description": "%config.learnFromCommits%"
+        },
+        "orvoMemory.connectAgents": {
+          "type": "string",
+          "enum": [
+            "ask",
+            "always",
+            "never"
+          ],
+          "default": "ask",
+          "description": "%config.connectAgents%"
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "orvoMemory.consolidateNow",
+        "title": "%command.consolidateNow%",
+        "category": "%category%",
+        "icon": "$(sync)"
+      },
+      {
+        "command": "orvoMemory.selectModel",
+        "title": "%command.selectModel%",
+        "category": "%category%"
+      },
+      {
+        "command": "orvoMemory.remember",
+        "title": "%command.remember%",
+        "category": "%category%",
+        "icon": "$(add)"
+      },
+      {
+        "command": "orvoMemory.connectAgents",
+        "title": "%command.connectAgents%",
+        "category": "%category%"
+      },
+      {
+        "command": "orvoMemory.openIndex",
+        "title": "%command.openIndex%",
+        "category": "%category%",
+        "icon": "$(book)"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "orvoMemory",
+          "title": "%view.container%",
+          "icon": "media/memory.svg"
+        }
+      ]
+    },
+    "views": {
+      "orvoMemory": [
+        {
+          "type": "webview",
+          "id": "orvoMemory.view",
+          "name": "%view.name%"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "orvoMemory.remember",
+          "when": "view == orvoMemory.view",
+          "group": "navigation@1"
+        },
+        {
+          "command": "orvoMemory.consolidateNow",
+          "when": "view == orvoMemory.view",
+          "group": "navigation@2"
+        },
+        {
+          "command": "orvoMemory.openIndex",
+          "when": "view == orvoMemory.view",
+          "group": "navigation@3"
+        }
+      ]
+    },
+    "languageModelTools": [
+      {
+        "name": "orvo_memory_remember",
+        "toolReferenceName": "remember",
+        "displayName": "%tool.remember.name%",
+        "modelDescription": "Save one fact about this project to its shared long-term memory (a decision and why, a convention, a gotcha, a setup step). Use it when you learn something future work should know. Never include secrets.",
+        "userDescription": "%tool.remember.description%",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(add)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "text": {
+              "type": "string",
+              "description": "One self-contained sentence or short paragraph to remember."
+            }
+          },
+          "required": [
+            "text"
+          ]
+        }
+      },
+      {
+        "name": "orvo_memory_search",
+        "toolReferenceName": "memory",
+        "displayName": "%tool.search.name%",
+        "modelDescription": "Search this project's shared long-term memory (decisions, conventions, facts, gotchas, todos) before starting work or when unsure how something is done here.",
+        "userDescription": "%tool.search.description%",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(search)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string",
+              "description": "Keywords to look for."
+            }
+          },
+          "required": [
+            "query"
+          ]
+        }
+      }
+    ]
+  },
+  "devDependencies": {
+    "@types/node": "24.x"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/aman-dhakar-191/ORVO.git"
+  }
+}

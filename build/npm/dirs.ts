@@ -37,6 +37,7 @@ export const dirs = [
 	'extensions/markdown-language-features',
 	'extensions/markdown-math',
 	'extensions/merge-conflict',
+	'extensions/orvo-memory',
 	'extensions/mermaid-markdown-features',
 	'extensions/microsoft-authentication',
 	'extensions/notebook-renderers',
