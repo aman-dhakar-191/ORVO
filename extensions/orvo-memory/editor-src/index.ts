@@ -68,11 +68,12 @@ const ui: { tab: Tab; selected?: string; editing?: { id?: string }; type: string
 	query: '',
 };
 let data: Data = { notes: [], inbox: [] };
-const code: { map?: CodeMap; dependents?: Map<string, string[]>; scanning: boolean; unavailable: boolean; requested: boolean; depth: number; folder?: string; file?: string; query: string } = {
+/** Folder levels the code graph groups files by. */
+const CODE_DEPTH = 2;
+const code: { map?: CodeMap; dependents?: Map<string, string[]>; scanning: boolean; unavailable: boolean; requested: boolean; folder?: string; file?: string; query: string } = {
 	scanning: false,
 	unavailable: false,
 	requested: false,
-	depth: 2,
 	query: '',
 };
 const codePositions = new Map<string, Point>();
@@ -570,7 +571,7 @@ function requestCodeMap(force = false): void {
 
 function selectFile(file: string): void {
 	code.file = file;
-	code.folder = folderOf(file, code.depth);
+	code.folder = folderOf(file, CODE_DEPTH);
 	render();
 }
 
@@ -636,10 +637,10 @@ function renderCodeGraph(container: HTMLElement): void {
 	const counts = new Map<string, number>();
 	const linkCounts = new Map<string, number>();
 	for (const file of map.files) {
-		const folder = folderOf(file, code.depth);
+		const folder = folderOf(file, CODE_DEPTH);
 		counts.set(folder, (counts.get(folder) ?? 0) + 1);
 		for (const target of map.imports[file] ?? []) {
-			const other = folderOf(target, code.depth);
+			const other = folderOf(target, CODE_DEPTH);
 			if (other !== folder) {
 				const key = `${folder}\n${other}`;
 				linkCounts.set(key, (linkCounts.get(key) ?? 0) + 1);
@@ -780,7 +781,7 @@ function renderCodeDetail(container: HTMLElement): void {
 	}
 	if (code.folder) {
 		const folder = code.folder;
-		container.append(h('h2', { class: 'path', text: folder }), fileList(map.files.filter(candidate => folderOf(candidate, code.depth) === folder).sort(byDependents)));
+		container.append(h('h2', { class: 'path', text: folder }), fileList(map.files.filter(candidate => folderOf(candidate, CODE_DEPTH) === folder).sort(byDependents)));
 		return;
 	}
 	container.append(
@@ -960,8 +961,6 @@ function render(): void {
 	const content = h('div', { class: 'content' });
 	const detail = h('div', { class: 'right' });
 	if (ui.tab === 'code') {
-		const depth = h('select', { on: { change: event => { code.depth = Number(valueOf(event)); code.folder = undefined; codeLayoutKey.value = ''; codePositions.clear(); codeView.centered = false; render(); } } }, [1, 2, 3, 4].map(value => h('option', { text: String(value), attrs: { value: String(value) } })));
-		depth.value = String(code.depth);
 		const map = code.map;
 		const codeBar = h('div', { class: 'filters' }, [h('div', { class: 'row' }, [
 			tabBar,
@@ -972,7 +971,6 @@ function render(): void {
 				map.truncated && h('span', { class: 'stat', text: t.truncated }),
 			]),
 			h('span', { class: 'spacer' }),
-			h('span', { class: 'group meta' }, [`${t.depth}:`, depth]),
 			h('button', { class: 'secondary', text: code.scanning ? t.scanning : t.rescan, on: { click: () => { requestCodeMap(true); render(); } } }),
 		])]);
 		app.append(h('div', { class: 'main' }, [h('div', { class: 'left' }, [codeBar, content]), detail]));

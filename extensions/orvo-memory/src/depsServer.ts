@@ -21,8 +21,8 @@ const root = path.resolve(process.argv[2] || process.cwd());
 let cached: { graph: DepsGraph; at: number } | undefined;
 let scanning: Promise<DepsGraph> | undefined;
 
-async function graph(force = false): Promise<DepsGraph> {
-	if (!force && cached && Date.now() - cached.at < CACHE_MS) {
+async function graph(): Promise<DepsGraph> {
+	if (cached && Date.now() - cached.at < CACHE_MS) {
 		return cached.graph;
 	}
 	scanning ??= buildDepsGraph(root).then(result => {
@@ -154,15 +154,6 @@ const tools: Tool[] = [
 			return matches.length
 				? list(matches.map(file => `${file} (imports ${g.imports[file]?.length ?? 0}, imported by ${dependents.get(file)?.length ?? 0})`))
 				: `No files match "${args.query}".`;
-		},
-	},
-	{
-		name: 'deps_rescan',
-		description: 'Rescan the project now (the map otherwise refreshes on its own every few seconds).',
-		inputSchema: { type: 'object', properties: {} },
-		async run() {
-			const g = await graph(true);
-			return `Rescanned ${g.files.length} files.`;
 		},
 	},
 ];

@@ -30,8 +30,6 @@ export class MemoryEditor implements vscode.Disposable {
 	private readonly disposables: vscode.Disposable[] = [];
 	private codeMap: { graph: DepsGraph; cycles: string[][] } | undefined;
 	private codeMapScan: Promise<void> | undefined;
-	private codeMapWanted = false;
-	private codeMapTimer: ReturnType<typeof setTimeout> | undefined;
 
 	constructor(
 		private readonly extensionUri: vscode.Uri,
@@ -40,25 +38,10 @@ export class MemoryEditor implements vscode.Disposable {
 		private readonly actions: MemoryViewActions,
 		private readonly onDidWrite: () => void,
 	) {
-		this.disposables.push(
-			onDidChange(() => void this.refresh()),
-			// Keep the Code tab current: rescan shortly after a source file is saved, created or deleted.
-			vscode.workspace.onDidSaveTextDocument(document => this.codeMapMaybeChanged(document.uri)),
-			vscode.workspace.onDidCreateFiles(event => event.files.forEach(uri => this.codeMapMaybeChanged(uri))),
-			vscode.workspace.onDidDeleteFiles(event => event.files.forEach(uri => this.codeMapMaybeChanged(uri))),
-			{ dispose: () => clearTimeout(this.codeMapTimer) },
-		);
-	}
-
-	private codeMapMaybeChanged(uri: vscode.Uri): void {
-		if (this.panel && this.codeMapWanted && /\.([cm]?[jt]sx?|json)$/.test(uri.path)) {
-			clearTimeout(this.codeMapTimer);
-			this.codeMapTimer = setTimeout(() => void this.sendCodeMap(true), 1500);
-		}
+		this.disposables.push(onDidChange(() => void this.refresh()));
 	}
 
 	private async sendCodeMap(force: boolean): Promise<void> {
-		this.codeMapWanted = true;
 		const folder = this.store()?.folder;
 		if (!folder || folder.uri.scheme !== 'file') {
 			await this.panel?.webview.postMessage({ type: 'codeMap', unavailable: true });
@@ -91,10 +74,7 @@ export class MemoryEditor implements vscode.Disposable {
 			this.panel.iconPath = vscode.Uri.joinPath(media, 'memory.svg');
 			this.panel.webview.html = this.html(this.panel.webview, media);
 			this.panel.webview.onDidReceiveMessage((message: EditorMessage) => this.onMessage(message), undefined, this.disposables);
-			this.panel.onDidDispose(() => {
-				this.panel = undefined;
-				this.codeMapWanted = false;
-			}, undefined, this.disposables);
+			this.panel.onDidDispose(() => this.panel = undefined, undefined, this.disposables);
 		}
 		if (selectId) {
 			void this.panel.webview.postMessage({ type: 'select', id: selectId });
@@ -228,7 +208,6 @@ export class MemoryEditor implements vscode.Disposable {
 			codeUnavailable: vscode.l10n.t('The code map needs a local folder.'),
 			codeEmpty: vscode.l10n.t('No TypeScript or JavaScript files found.'),
 			truncated: vscode.l10n.t('Stopped at the file limit; some files are missing.'),
-			depth: vscode.l10n.t('Folder depth'),
 			searchFiles: vscode.l10n.t('Find a file'),
 			imports: vscode.l10n.t('Imports'),
 			usedBy: vscode.l10n.t('Used by'),
