@@ -7,6 +7,7 @@ import * as vscode from 'vscode';
 import { applyConsolidation, buildConsolidationPrompt, CommitInfo, ConsolidationFrequency, isConsolidationDue, parseConsolidationResult } from './consolidate';
 import { searchNotes } from './notes';
 import { MemoryStore } from './store';
+import { MemoryEditor } from './editor';
 import { MemoryViewProvider } from './view';
 
 const SCHEDULE_CHECK_MS = 15 * 60_000;
@@ -31,17 +32,23 @@ class OrvoMemory implements vscode.Disposable {
 	private readonly disposables: vscode.Disposable[] = [];
 	private readonly onDidChange = new vscode.EventEmitter<void>();
 	private readonly view: MemoryViewProvider;
+	private readonly editor: MemoryEditor;
 	private running: Promise<void> | undefined;
 
 	constructor(private readonly context: vscode.ExtensionContext) {
-		this.view = new MemoryViewProvider(context.extensionUri, () => this.store(), this.onDidChange.event, {
+		const actions = {
 			consolidate: () => this.consolidate(true),
 			selectModel: () => this.selectModel(),
-			openNote: id => this.openNote(id),
+			openNote: (id: string) => this.openNote(id),
 			remember: () => this.rememberInteractively(),
-		});
+		};
+		this.editor = new MemoryEditor(context.extensionUri, () => this.store(), this.onDidChange.event, actions, () => this.onDidChange.fire());
+		// In the sidebar a note opens in the memory editor; the editor's Open File opens the Markdown file.
+		this.view = new MemoryViewProvider(context.extensionUri, () => this.store(), this.onDidChange.event, { ...actions, openNote: async id => this.editor.open(id) });
 		this.disposables.push(
 			this.onDidChange,
+			this.editor,
+			vscode.commands.registerCommand('orvoMemory.openEditor', () => this.editor.open()),
 			vscode.window.registerWebviewViewProvider(MemoryViewProvider.viewId, this.view),
 			vscode.commands.registerCommand('orvoMemory.consolidateNow', () => this.consolidate(true)),
 			vscode.commands.registerCommand('orvoMemory.selectModel', () => this.selectModel()),

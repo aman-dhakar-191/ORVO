@@ -14,6 +14,7 @@
 	"config.model.id": "ID of the model used for consolidation. Use the Select Model command to pick.",
 	"config.learnFromCommits": "Also learn from new git commit messages.",
 	"config.connectAgents": "Whether to add a memory section to CLAUDE.md and AGENTS.md so every agent reads and writes the memory.",
+	"command.openEditor": "Open Memory Editor",
 	"command.consolidateNow": "Consolidate Now",
 	"command.selectModel": "Select Model",
 	"command.remember": "Remember...",
