@@ -725,7 +725,7 @@ function renderCodeGraph(container: HTMLElement): void {
 		const maxX = Math.max(...points.map(p => p.x)) + 200;
 		const minY = Math.min(...points.map(p => p.y)) - 40;
 		const maxY = Math.max(...points.map(p => p.y)) + 40;
-		const scale = Math.max(0.2, Math.min(1.6, rect.width / (maxX - minX), (rect.height - 30) / (maxY - minY)));
+		const scale = Math.max(0.6, Math.min(1.6, rect.width / (maxX - minX), (rect.height - 30) / (maxY - minY)));
 		codeView.scale = scale;
 		codeView.x = rect.width / 2 - ((minX + maxX) / 2) * scale;
 		codeView.y = (rect.height - 30) / 2 - ((minY + maxY) / 2) * scale;
