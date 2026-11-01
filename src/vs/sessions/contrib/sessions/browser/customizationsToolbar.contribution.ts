@@ -42,6 +42,8 @@ import { CanvasesEnabledSettingId } from '../../../../platform/agentHost/common/
 import { IAICustomizationMcpServerCountService } from './customizationMcpServerCount.js';
 import { IOpenAICustomizationsCommandOptions, OPEN_AI_CUSTOMIZATIONS_COMMAND_ID } from './customizationsConstants.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
+import { ICommandService } from '../../../../platform/commands/common/commands.js';
+import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { getExtensionSuggestionsBadgeDescription, IAgentsWindowExtensionSuggestionsService } from '../../extensions/browser/agentsWindowExtensionSuggestions.js';
 
 export interface ICustomizationItemConfig {
@@ -75,6 +77,14 @@ const CUSTOMIZATION_OVERVIEW_ITEM: ICustomizationItemConfig = {
 	label: localize('overview', "Overview"),
 	icon: Codicon.home,
 };
+
+/** ORVO: opens the ORVO Memory extension's editor (graph, timeline, notes) for the current folder. */
+const ORVO_MEMORY_ITEM: ICustomizationItemConfig = {
+	id: 'sessions.customization.orvoMemory',
+	label: localize('orvoMemory', "Memory"),
+	icon: Codicon.graph,
+};
+const ORVO_MEMORY_OPEN_COMMAND = 'orvoMemory.openEditor';
 
 export function readCustomizationCount(
 	config: ICustomizationItemConfig,
@@ -421,6 +431,34 @@ export class CustomizationsToolbarContribution extends Disposable implements IWo
 					accessor.get(ISessionsService),
 					options,
 				);
+			}
+		}));
+
+		this._register(actionViewItemService.register(Menus.SidebarCustomizations, ORVO_MEMORY_ITEM.id, (action, options) => {
+			return instantiationService.createInstance(CustomizationLinkViewItem, action, options, ORVO_MEMORY_ITEM);
+		}, undefined));
+
+		this._register(registerAction2(class extends Action2 {
+			constructor() {
+				super({
+					id: ORVO_MEMORY_ITEM.id,
+					title: ORVO_MEMORY_ITEM.label,
+					menu: {
+						id: Menus.SidebarCustomizations,
+						group: 'navigation',
+						order: 0.5,
+						when: ChatContextKeys.enabled,
+					}
+				});
+			}
+			async run(accessor: ServicesAccessor): Promise<void> {
+				const commandService = accessor.get(ICommandService);
+				const notificationService = accessor.get(INotificationService);
+				try {
+					await commandService.executeCommand(ORVO_MEMORY_OPEN_COMMAND);
+				} catch {
+					notificationService.info(localize('orvoMemory.unavailable', "ORVO Memory isn't running in this window. Open a folder, and check that the ORVO Memory extension is enabled."));
+				}
 			}
 		}));
 

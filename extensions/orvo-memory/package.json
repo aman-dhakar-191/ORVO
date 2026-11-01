@@ -83,6 +83,12 @@
     },
     "commands": [
       {
+        "command": "orvoMemory.openEditor",
+        "title": "%command.openEditor%",
+        "category": "%category%",
+        "icon": "$(graph)"
+      },
+      {
         "command": "orvoMemory.consolidateNow",
         "title": "%command.consolidateNow%",
         "category": "%category%",
@@ -131,6 +137,11 @@
     },
     "menus": {
       "view/title": [
+        {
+          "command": "orvoMemory.openEditor",
+          "when": "view == orvoMemory.view",
+          "group": "navigation@0"
+        },
         {
           "command": "orvoMemory.remember",
           "when": "view == orvoMemory.view",

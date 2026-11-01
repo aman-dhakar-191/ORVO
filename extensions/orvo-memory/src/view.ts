@@ -15,7 +15,7 @@ export interface MemoryViewActions {
 }
 
 interface ViewMessage {
-	readonly command: 'consolidate' | 'selectModel' | 'openNote' | 'remember' | 'openIndex' | 'connectAgents' | 'setFrequency' | 'ready';
+	readonly command: 'consolidate' | 'selectModel' | 'openNote' | 'remember' | 'openIndex' | 'openEditor' | 'connectAgents' | 'setFrequency' | 'ready';
 	readonly id?: string;
 	readonly frequency?: string;
 }
@@ -54,6 +54,7 @@ export class MemoryViewProvider implements vscode.WebviewViewProvider {
 			case 'selectModel': return this.actions.selectModel();
 			case 'remember': return this.actions.remember();
 			case 'openIndex': return void vscode.commands.executeCommand('orvoMemory.openIndex');
+			case 'openEditor': return void vscode.commands.executeCommand('orvoMemory.openEditor');
 			case 'connectAgents': return void vscode.commands.executeCommand('orvoMemory.connectAgents');
 			case 'openNote':
 				if (message.id) {
@@ -112,6 +113,7 @@ export class MemoryViewProvider implements vscode.WebviewViewProvider {
 			last: vscode.l10n.t('Last consolidated'),
 			never: vscode.l10n.t('never'),
 			index: vscode.l10n.t('Open MEMORY.md'),
+			editor: vscode.l10n.t('Open Memory Editor (graph, timeline, edit)'),
 			connect: vscode.l10n.t('Connect agents (CLAUDE.md, AGENTS.md)'),
 		};
 		return `<!DOCTYPE html>
@@ -156,6 +158,7 @@ export class MemoryViewProvider implements vscode.WebviewViewProvider {
 	<div class="row meta"><span id="inbox"></span></div>
 	<div class="row meta"><span>${t.frequency}:</span><select id="frequency"></select></div>
 	<div class="row meta"><span>${t.model}:</span><button id="model" class="link"></button></div>
+	<div class="row"><button id="editor">${t.editor}</button></div>
 	<div class="row"><button id="index" class="link">${t.index}</button></div>
 	<div class="row"><button id="connect" class="link hidden">${t.connect}</button></div>
 	<div class="row"><input id="search" type="search" placeholder="${t.search}"></div>
@@ -177,6 +180,7 @@ export class MemoryViewProvider implements vscode.WebviewViewProvider {
 		$(id).addEventListener('click', () => vscode.postMessage({ command: id === 'index' ? 'openIndex' : id === 'connect' ? 'connectAgents' : id }));
 	}
 	$('model').addEventListener('click', () => vscode.postMessage({ command: 'selectModel' }));
+	$('editor').addEventListener('click', () => vscode.postMessage({ command: 'openEditor' }));
 	for (const f of frequencies) { const option = el('option', undefined, f); option.value = f; $('frequency').appendChild(option); }
 	$('frequency').addEventListener('change', event => vscode.postMessage({ command: 'setFrequency', frequency: event.target.value }));
 	$('search').addEventListener('input', event => { filter.query = event.target.value.toLowerCase(); render(); });
