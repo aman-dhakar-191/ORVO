@@ -1,6 +1,6 @@
 {
 	"displayName": "ORVO Memory",
-	"description": "Shared, project-based long-term memory for Copilot, Claude and Codex, consolidated on a schedule by the model you choose.",
+	"description": "Shared, project-based long-term memory and an import-graph code map for Copilot, Claude and Codex.",
 	"untrusted": "Memory writes files in the workspace and sends its contents to a language model.",
 	"category": "ORVO Memory",
 	"config.title": "ORVO Memory",
@@ -15,6 +15,9 @@
 	"config.learnFromCommits": "Also learn from new git commit messages.",
 	"config.connectAgents": "Whether to add a memory section to CLAUDE.md and AGENTS.md so every agent reads and writes the memory.",
 	"command.openEditor": "Open Memory Editor",
+	"command.openCodeMap": "Open Code Map",
+	"mcp.codeMap": "ORVO Code Map",
+	"config.codeMap.enabled": "Offer the ORVO Code Map MCP server (the project's import graph) to Copilot, and to Claude and Codex through `.mcp.json` when agents are connected.",
 	"command.consolidateNow": "Consolidate Now",
 	"command.selectModel": "Select Model",
 	"command.remember": "Remember...",

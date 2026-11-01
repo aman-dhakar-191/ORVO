@@ -5,6 +5,7 @@
 
 import * as vscode from 'vscode';
 import { NOTE_TYPES } from './notes';
+import { codeMapEntry } from './codeMap';
 import { MemoryStore } from './store';
 
 export interface MemoryViewActions {
@@ -84,7 +85,7 @@ export class MemoryViewProvider implements vscode.WebviewViewProvider {
 			await this.view.webview.postMessage({ ...base, available: false, notes: [], inbox: 0 });
 			return;
 		}
-		const [notes, inbox, state, connected] = await Promise.all([store.readNotes(), store.readInbox(), store.readState(), store.agentsConnected()]);
+		const [notes, inbox, state, connected] = await Promise.all([store.readNotes(), store.readInbox(), store.readState(), store.agentsConnected(codeMapEntry(store.folder))]);
 		await this.view.webview.postMessage({
 			...base,
 			available: true,

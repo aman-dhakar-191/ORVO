@@ -4,13 +4,17 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as vscode from 'vscode';
+import { buildDepsGraph, DepsGraph, findCycles } from './deps';
 import { MemoryNote, NOTE_TYPES, NoteType, slugify } from './notes';
+import { codeMapEntry } from './codeMap';
 import { MemoryStore } from './store';
 import { MemoryViewActions } from './view';
 
 interface EditorMessage {
-	readonly command: 'ready' | 'consolidate' | 'selectModel' | 'remember' | 'openIndex' | 'openNote' | 'saveNote' | 'deleteNote' | 'setFrequency' | 'connectAgents';
+	readonly command: 'ready' | 'consolidate' | 'selectModel' | 'remember' | 'openIndex' | 'openNote' | 'saveNote' | 'deleteNote' | 'setFrequency' | 'connectAgents' | 'codeMap' | 'openFile';
 	readonly id?: string;
+	readonly file?: string;
+	readonly force?: boolean;
 	readonly frequency?: string;
 	readonly note?: { readonly id?: string; readonly title: string; readonly type: string; readonly tags: readonly string[]; readonly body: string };
 }
@@ -24,6 +28,8 @@ export class MemoryEditor implements vscode.Disposable {
 
 	private panel: vscode.WebviewPanel | undefined;
 	private readonly disposables: vscode.Disposable[] = [];
+	private codeMap: { graph: DepsGraph; cycles: string[][] } | undefined;
+	private codeMapScan: Promise<void> | undefined;
 
 	constructor(
 		private readonly extensionUri: vscode.Uri,
@@ -35,7 +41,27 @@ export class MemoryEditor implements vscode.Disposable {
 		this.disposables.push(onDidChange(() => void this.refresh()));
 	}
 
-	open(selectId?: string): void {
+	private async sendCodeMap(force: boolean): Promise<void> {
+		const folder = this.store()?.folder;
+		if (!folder || folder.uri.scheme !== 'file') {
+			await this.panel?.webview.postMessage({ type: 'codeMap', unavailable: true });
+			return;
+		}
+		if (force || !this.codeMap || this.codeMap.graph.root !== folder.uri.fsPath) {
+			this.codeMapScan ??= (async () => {
+				await this.panel?.webview.postMessage({ type: 'codeMapScanning' });
+				const graph = await buildDepsGraph(folder.uri.fsPath);
+				this.codeMap = { graph, cycles: findCycles(graph) };
+			})().finally(() => this.codeMapScan = undefined);
+			await this.codeMapScan;
+		}
+		const map = this.codeMap;
+		if (map) {
+			await this.panel?.webview.postMessage({ type: 'codeMap', files: map.graph.files, imports: map.graph.imports, packages: map.graph.packages, cycles: map.cycles, truncated: map.graph.truncated, scannedAt: map.graph.scannedAt });
+		}
+	}
+
+	open(selectId?: string, tab?: 'code'): void {
 		if (this.panel) {
 			this.panel.reveal();
 		} else {
@@ -52,6 +78,9 @@ export class MemoryEditor implements vscode.Disposable {
 		}
 		if (selectId) {
 			void this.panel.webview.postMessage({ type: 'select', id: selectId });
+		}
+		if (tab) {
+			void this.panel.webview.postMessage({ type: 'tab', tab });
 		}
 	}
 
@@ -72,6 +101,14 @@ export class MemoryEditor implements vscode.Disposable {
 					return;
 				case 'saveNote': return message.note ? await this.saveNote(message.note) : undefined;
 				case 'deleteNote': return message.id ? await this.deleteNote(message.id) : undefined;
+				case 'codeMap': return await this.sendCodeMap(!!message.force);
+				case 'openFile': {
+					const folder = this.store()?.folder;
+					if (folder && message.file && this.codeMap?.graph.files.includes(message.file)) {
+						await vscode.window.showTextDocument(vscode.Uri.joinPath(folder.uri, ...message.file.split('/')), { preview: true });
+					}
+					return;
+				}
 			}
 		} catch (error) {
 			void vscode.window.showErrorMessage(vscode.l10n.t('ORVO Memory: {0}', error instanceof Error ? error.message : String(error)));
@@ -145,7 +182,7 @@ export class MemoryEditor implements vscode.Disposable {
 			await this.panel.webview.postMessage({ ...base, available: false, notes: [], inbox: [] });
 			return;
 		}
-		const [notes, inbox, state, connected] = await Promise.all([store.readNotes(), store.readInbox(), store.readState(), store.agentsConnected()]);
+		const [notes, inbox, state, connected] = await Promise.all([store.readNotes(), store.readInbox(), store.readState(), store.agentsConnected(codeMapEntry(store.folder))]);
 		await this.panel.webview.postMessage({
 			...base,
 			available: true,
@@ -162,6 +199,23 @@ export class MemoryEditor implements vscode.Disposable {
 		const style = webview.asWebviewUri(vscode.Uri.joinPath(media, 'editor.css'));
 		const strings = {
 			heading: vscode.l10n.t('Project Memory'),
+			code: vscode.l10n.t('Code'),
+			files: vscode.l10n.t('files'),
+			importsCount: vscode.l10n.t('imports'),
+			cyclesCount: vscode.l10n.t('cycles'),
+			rescan: vscode.l10n.t('Rescan'),
+			scanning: vscode.l10n.t('Scanning the project imports…'),
+			codeUnavailable: vscode.l10n.t('The code map needs a local folder.'),
+			codeEmpty: vscode.l10n.t('No TypeScript or JavaScript files found.'),
+			truncated: vscode.l10n.t('Stopped at the file limit; some files are missing.'),
+			searchFiles: vscode.l10n.t('Find a file'),
+			imports: vscode.l10n.t('Imports'),
+			usedBy: vscode.l10n.t('Used by'),
+			packages: vscode.l10n.t('Packages'),
+			inCycle: vscode.l10n.t('Part of an import cycle with'),
+			hubs: vscode.l10n.t('Most depended-on files'),
+			pickFile: vscode.l10n.t('Click a folder to list its files, or find a file. Agents get the same map through the orvo-codemap MCP tools.'),
+			codeHint: vscode.l10n.t('Folders sized by file count; lines are imports between them'),
 			all: vscode.l10n.t('all'),
 			graphHint: vscode.l10n.t('Scroll to zoom · drag to pan or move a node · click a tag to filter'),
 			remember: vscode.l10n.t('Remember'),

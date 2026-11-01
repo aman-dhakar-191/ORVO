@@ -12,6 +12,7 @@ run({
 	platform: 'node',
 	entryPoints: {
 		'extension': path.join(srcDir, 'extension.ts'),
+		'depsServer': path.join(srcDir, 'depsServer.ts'),
 	},
 	srcDir,
 	outdir: outDir,

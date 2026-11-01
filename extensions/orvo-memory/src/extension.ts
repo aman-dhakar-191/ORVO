@@ -4,6 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as vscode from 'vscode';
+import { codeMapEntry } from './codeMap';
 import { applyConsolidation, buildConsolidationPrompt, CommitInfo, ConsolidationFrequency, isConsolidationDue, parseConsolidationResult } from './consolidate';
 import { searchNotes } from './notes';
 import { MemoryStore } from './store';
@@ -31,6 +32,7 @@ class OrvoMemory implements vscode.Disposable {
 
 	private readonly disposables: vscode.Disposable[] = [];
 	private readonly onDidChange = new vscode.EventEmitter<void>();
+	private readonly onDidChangeCodeMap = new vscode.EventEmitter<void>();
 	private readonly view: MemoryViewProvider;
 	private readonly editor: MemoryEditor;
 	private running: Promise<void> | undefined;
@@ -47,7 +49,17 @@ class OrvoMemory implements vscode.Disposable {
 		this.view = new MemoryViewProvider(context.extensionUri, () => this.store(), this.onDidChange.event, { ...actions, openNote: async id => this.editor.open(id) });
 		this.disposables.push(
 			this.onDidChange,
+			this.onDidChangeCodeMap,
 			this.editor,
+			vscode.commands.registerCommand('orvoMemory.openCodeMap', () => this.editor.open(undefined, 'code')),
+			vscode.lm.registerMcpServerDefinitionProvider('orvoMemory.codeMap', {
+				onDidChangeMcpServerDefinitions: this.onDidChangeCodeMap.event,
+				provideMcpServerDefinitions: () => {
+					const entry = codeMapEntry(vscode.workspace.workspaceFolders?.[0]);
+					return entry ? [new vscode.McpStdioServerDefinition(vscode.l10n.t('ORVO Code Map'), entry.command, [...entry.args], { ...entry.env }, '1.0.0')] : [];
+				},
+			}),
+			vscode.workspace.onDidChangeWorkspaceFolders(() => this.onDidChangeCodeMap.fire()),
 			vscode.commands.registerCommand('orvoMemory.openEditor', () => this.editor.open()),
 			vscode.window.registerWebviewViewProvider(MemoryViewProvider.viewId, this.view),
 			vscode.commands.registerCommand('orvoMemory.consolidateNow', () => this.consolidate(true)),
@@ -87,6 +99,9 @@ class OrvoMemory implements vscode.Disposable {
 				if (event.affectsConfiguration('orvoMemory')) {
 					this.onDidChange.fire();
 				}
+				if (event.affectsConfiguration('orvoMemory.codeMap.enabled')) {
+					this.onDidChangeCodeMap.fire();
+				}
 			}),
 		);
 
@@ -109,8 +124,12 @@ class OrvoMemory implements vscode.Disposable {
 	}
 
 	private async offerToConnectAgents(store: MemoryStore): Promise<void> {
+		const codeMap = codeMapEntry(store.folder);
+		if (codeMap) {
+			await store.refreshCodeMapEntry(codeMap).catch(() => undefined);
+		}
 		const mode = config().get<'ask' | 'always' | 'never'>('connectAgents', 'ask');
-		if (mode === 'never' || await store.agentsConnected()) {
+		if (mode === 'never' || await store.agentsConnected(codeMap)) {
 			return;
 		}
 		if (mode === 'always') {
@@ -123,7 +142,7 @@ class OrvoMemory implements vscode.Disposable {
 		await this.context.workspaceState.update(key, true);
 		const connect = vscode.l10n.t('Connect Agents');
 		const choice = await vscode.window.showInformationMessage(
-			vscode.l10n.t('Share project memory with Copilot, Claude and Codex? ORVO Memory adds a short section to CLAUDE.md and AGENTS.md telling agents to read .orvo/memory/MEMORY.md and record what they learn.'),
+			vscode.l10n.t('Share project memory and the code map with Copilot, Claude and Codex? ORVO Memory adds a short section to CLAUDE.md and AGENTS.md (read .orvo/memory/MEMORY.md, record what you learn) and the orvo-codemap server to .mcp.json.'),
 			connect, vscode.l10n.t('Not Now'));
 		if (choice === connect) {
 			await this.connectAgents(false);
@@ -136,9 +155,10 @@ class OrvoMemory implements vscode.Disposable {
 			return;
 		}
 		await store.ensure();
-		await store.connectAgents();
-		if (explicit) {
-			void vscode.window.showInformationMessage(vscode.l10n.t('CLAUDE.md and AGENTS.md now point agents at the project memory.'));
+		if (!await store.connectAgents(codeMapEntry(store.folder))) {
+			void vscode.window.showWarningMessage(vscode.l10n.t('.mcp.json is not plain JSON, so the orvo-codemap server was not added to it. CLAUDE.md and AGENTS.md were updated.'));
+		} else if (explicit) {
+			void vscode.window.showInformationMessage(vscode.l10n.t('CLAUDE.md and AGENTS.md now point agents at the project memory, and .mcp.json offers them the code map.'));
 		}
 		this.onDidChange.fire();
 	}

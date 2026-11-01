@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as vscode from 'vscode';
-import { AgentFile, hasMemoryBlock, memoryInstructions, upsertMemoryBlock } from './agents';
+import { AgentFile, CODE_MAP_SERVER_NAME, hasMcpServer, hasMemoryBlock, McpStdioEntry, memoryInstructions, upsertMcpServer, upsertMemoryBlock } from './agents';
 import { formatInboxEntry, INBOX_HEADER, MemoryNote, MemoryState, parseInbox, parseNote, RawEntry, renderIndex, serializeNote } from './notes';
 
 const encoder = new TextEncoder();
@@ -133,21 +133,46 @@ export class MemoryStore {
 		await this.write(this.index, renderIndex(notes, state));
 	}
 
-	/** Whether CLAUDE.md and AGENTS.md at the folder root already point agents at the memory. */
-	async agentsConnected(): Promise<boolean> {
+	get mcpJson(): vscode.Uri {
+		return vscode.Uri.joinPath(this.folder.uri, '.mcp.json');
+	}
+
+	/** Whether CLAUDE.md and AGENTS.md point agents at the memory (and, given a code map entry, .mcp.json has it). */
+	async agentsConnected(codeMap?: McpStdioEntry): Promise<boolean> {
 		for (const file of ['CLAUDE.md', 'AGENTS.md'] as const) {
 			if (!hasMemoryBlock(await this.read(vscode.Uri.joinPath(this.folder.uri, file)))) {
 				return false;
 			}
 		}
-		return true;
+		return !codeMap || hasMcpServer(await this.read(this.mcpJson), CODE_MAP_SERVER_NAME);
 	}
 
-	/** Adds (or refreshes) the managed memory section in CLAUDE.md and AGENTS.md, creating them if needed. */
-	async connectAgents(): Promise<void> {
+	/**
+	 * Adds (or refreshes) the managed memory section in CLAUDE.md and AGENTS.md, creating them if needed, and the code
+	 * map server in .mcp.json. Returns false when .mcp.json exists but isn't plain JSON (it is then left alone).
+	 */
+	async connectAgents(codeMap?: McpStdioEntry): Promise<boolean> {
 		for (const file of ['CLAUDE.md', 'AGENTS.md'] as AgentFile[]) {
 			const uri = vscode.Uri.joinPath(this.folder.uri, file);
 			await this.write(uri, upsertMemoryBlock(await this.read(uri), memoryInstructions(file)));
 		}
+		return codeMap ? this.writeCodeMapEntry(codeMap) : true;
+	}
+
+	/** Points the code map entry in .mcp.json at this ORVO install, if it is there with another path (ORVO moved). */
+	async refreshCodeMapEntry(codeMap: McpStdioEntry): Promise<void> {
+		const current = await this.read(this.mcpJson);
+		if (hasMcpServer(current, CODE_MAP_SERVER_NAME) && !hasMcpServer(current, CODE_MAP_SERVER_NAME, codeMap)) {
+			await this.writeCodeMapEntry(codeMap);
+		}
+	}
+
+	private async writeCodeMapEntry(codeMap: McpStdioEntry): Promise<boolean> {
+		const updated = upsertMcpServer(await this.read(this.mcpJson), CODE_MAP_SERVER_NAME, codeMap);
+		if (updated === undefined) {
+			return false;
+		}
+		await this.write(this.mcpJson, updated);
+		return true;
 	}
 }

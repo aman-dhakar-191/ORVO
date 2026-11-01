@@ -35,7 +35,16 @@ interface Data {
 interface Point { x: number; y: number; vx: number; vy: number }
 type GraphNode = { readonly id: string; readonly label: string } & ({ readonly kind: 'note'; readonly note: Note } | { readonly kind: 'tag'; readonly tag: string; readonly count: number });
 interface GraphLink { readonly source: string; readonly target: string }
-type Tab = 'graph' | 'timeline' | 'inbox';
+type Tab = 'graph' | 'timeline' | 'inbox' | 'code';
+
+interface CodeMap {
+	readonly files: readonly string[];
+	readonly imports: Readonly<Record<string, readonly string[]>>;
+	readonly packages: Readonly<Record<string, readonly string[]>>;
+	readonly cycles: readonly (readonly string[])[];
+	readonly truncated: boolean;
+	readonly scannedAt: string;
+}
 
 interface VsCodeApi {
 	postMessage(message: unknown): void;
@@ -59,9 +68,21 @@ const ui: { tab: Tab; selected?: string; editing?: { id?: string }; type: string
 	query: '',
 };
 let data: Data = { notes: [], inbox: [] };
+/** Folder levels the code graph groups files by. */
+const CODE_DEPTH = 2;
+const code: { map?: CodeMap; dependents?: Map<string, string[]>; scanning: boolean; unavailable: boolean; requested: boolean; folder?: string; file?: string; query: string } = {
+	scanning: false,
+	unavailable: false,
+	requested: false,
+	query: '',
+};
+const codePositions = new Map<string, Point>();
+const codeLayoutKey = { value: '' };
+const codeView = { x: 0, y: 0, scale: 1, centered: false };
 
-const positions = new Map<string, Point>();
-let layoutKey = '';
+const notePositions = new Map<string, Point>();
+const noteLayoutKey = { value: '' };
+const positions = notePositions;
 const view = { x: 0, y: 0, scale: 1, centered: false };
 
 // #region DOM helpers
@@ -259,12 +280,12 @@ function graphModel(): { nodes: GraphNode[]; links: GraphLink[] } {
  * A small force layout (repulsion, springs on links, pull to the centre), run to rest synchronously: memory graphs are
  * hundreds of nodes at most. Nodes keep their position across refreshes, so the graph doesn't jump.
  */
-function layout(nodes: readonly GraphNode[], links: readonly GraphLink[]): void {
+function layout(nodes: readonly { readonly id: string }[], links: readonly GraphLink[], positions: Map<string, Point> = notePositions, keyRef: { value: string } = noteLayoutKey, springLength = 70, repulsion = 2200): void {
 	const key = nodes.map(node => node.id).join('|') + '#' + links.map(link => link.source + link.target).join('|');
-	if (key === layoutKey) {
+	if (key === keyRef.value) {
 		return;
 	}
-	layoutKey = key;
+	keyRef.value = key;
 	const fresh = nodes.filter(node => !positions.has(node.id));
 	fresh.forEach((node, i) => {
 		const angle = (i / Math.max(1, fresh.length)) * Math.PI * 2;
@@ -295,7 +316,7 @@ function layout(nodes: readonly GraphNode[], links: readonly GraphLink[]): void 
 					distance2 = 0.25;
 				}
 				const distance = Math.sqrt(distance2);
-				const force = 2200 / distance2;
+				const force = repulsion / distance2;
 				a.vx += (dx / distance) * force;
 				a.vy += (dy / distance) * force;
 				b.vx -= (dx / distance) * force;
@@ -311,7 +332,7 @@ function layout(nodes: readonly GraphNode[], links: readonly GraphLink[]): void 
 			const dx = b.x - a.x;
 			const dy = b.y - a.y;
 			const distance = Math.max(1, Math.sqrt(dx * dx + dy * dy));
-			const force = (distance - 70) * 0.04;
+			const force = (distance - springLength) * 0.04;
 			a.vx += (dx / distance) * force;
 			a.vy += (dy / distance) * force;
 			b.vx -= (dx / distance) * force;
@@ -535,6 +556,243 @@ function renderInbox(container: HTMLElement): void {
 
 // #endregion
 
+// #region Code map (the import graph the orvo-codemap MCP server gives agents)
+
+function folderOf(file: string, depth: number): string {
+	const parts = file.split('/').slice(0, -1);
+	return parts.length ? parts.slice(0, depth).join('/') : '.';
+}
+
+function requestCodeMap(force = false): void {
+	code.requested = true;
+	code.scanning = true;
+	post('codeMap', { force });
+}
+
+function selectFile(file: string): void {
+	code.file = file;
+	code.folder = folderOf(file, CODE_DEPTH);
+	render();
+}
+
+/** Background pan and wheel zoom for an SVG scene. */
+function panZoom(svg: SVGSVGElement, scene: SVGGElement, state: { x: number; y: number; scale: number }): { moved: () => boolean } {
+	const apply = () => scene.setAttribute('transform', `translate(${state.x},${state.y}) scale(${state.scale})`);
+	let drag: { x: number; y: number; ox: number; oy: number } | undefined;
+	let moved = false;
+	svg.addEventListener('pointerdown', event => {
+		moved = false;
+		drag = { x: event.clientX, y: event.clientY, ox: state.x, oy: state.y };
+		svg.setPointerCapture(event.pointerId);
+		svg.classList.add('panning');
+	});
+	svg.addEventListener('pointermove', event => {
+		if (!drag) {
+			return;
+		}
+		const dx = event.clientX - drag.x;
+		const dy = event.clientY - drag.y;
+		if (Math.abs(dx) + Math.abs(dy) > 3) {
+			moved = true;
+		}
+		state.x = drag.ox + dx;
+		state.y = drag.oy + dy;
+		apply();
+	});
+	const end = () => {
+		drag = undefined;
+		svg.classList.remove('panning');
+	};
+	svg.addEventListener('pointerup', end);
+	svg.addEventListener('pointercancel', end);
+	svg.addEventListener('wheel', event => {
+		event.preventDefault();
+		const rect = svg.getBoundingClientRect();
+		const mx = event.clientX - rect.left;
+		const my = event.clientY - rect.top;
+		const scale = Math.max(0.2, Math.min(4, state.scale * Math.exp(-event.deltaY * 0.0015)));
+		state.x = mx - (mx - state.x) * (scale / state.scale);
+		state.y = my - (my - state.y) * (scale / state.scale);
+		state.scale = scale;
+		apply();
+	}, { passive: false });
+	apply();
+	return { moved: () => moved };
+}
+
+function renderCodeGraph(container: HTMLElement): void {
+	if (code.unavailable) {
+		container.append(h('div', { class: 'empty meta', text: t.codeUnavailable }));
+		return;
+	}
+	const map = code.map;
+	if (!map) {
+		container.append(h('div', { class: 'empty meta', text: t.scanning }));
+		return;
+	}
+	if (!map.files.length) {
+		container.append(h('div', { class: 'empty meta', text: t.codeEmpty }));
+		return;
+	}
+	const counts = new Map<string, number>();
+	const linkCounts = new Map<string, number>();
+	for (const file of map.files) {
+		const folder = folderOf(file, CODE_DEPTH);
+		counts.set(folder, (counts.get(folder) ?? 0) + 1);
+		for (const target of map.imports[file] ?? []) {
+			const other = folderOf(target, CODE_DEPTH);
+			if (other !== folder) {
+				const key = `${folder}\n${other}`;
+				linkCounts.set(key, (linkCounts.get(key) ?? 0) + 1);
+			}
+		}
+	}
+	const nodes = [...counts.entries()].map(([id, files]) => ({ id, files }));
+	const links = [...linkCounts.entries()].map(([key, count]) => {
+		const [source, target] = key.split('\n');
+		return { source, target, count };
+	});
+	layout(nodes, links, codePositions, codeLayoutKey, 150, 14000);
+
+	const svg = s('svg', { class: 'graph' });
+	const defs = s('defs');
+	const marker = s('marker', { id: 'arrow', viewBox: '0 0 10 10', refX: 10, refY: 5, markerWidth: 9, markerHeight: 9, markerUnits: 'userSpaceOnUse', orient: 'auto-start-reverse' });
+	const arrow = s('path', { d: 'M 0 0 L 10 5 L 0 10 z', class: 'arrow' });
+	marker.append(arrow);
+	defs.append(marker);
+	const scene = s('g');
+	svg.append(defs, scene);
+	const { moved } = panZoom(svg, scene, codeView);
+	const radiusOf = (files: number) => 6 + Math.min(22, Math.sqrt(files) * 2.2);
+	const sizes = new Map(nodes.map(node => [node.id, radiusOf(node.files)]));
+
+	for (const link of links) {
+		const a = codePositions.get(link.source);
+		const b = codePositions.get(link.target);
+		if (!a || !b) {
+			continue;
+		}
+		const dx = b.x - a.x;
+		const dy = b.y - a.y;
+		const distance = Math.max(1, Math.sqrt(dx * dx + dy * dy));
+		const end = sizes.get(link.target) ?? 6;
+		const line = s('line', { x1: a.x, y1: a.y, x2: b.x - (dx / distance) * (end + 2), y2: b.y - (dy / distance) * (end + 2), 'marker-end': 'url(#arrow)' });
+		line.style.strokeWidth = String(Math.min(5, 0.8 + Math.log2(link.count)));
+		const hot = code.folder && (link.source === code.folder || link.target === code.folder);
+		line.setAttribute('class', `${hot ? 'hot' : ''}${code.folder && !hot ? ' dim' : ''}`.trim());
+		const tooltip = s('title');
+		tooltip.textContent = `${link.source} → ${link.target}: ${link.count} ${t.importsCount}`;
+		line.append(tooltip);
+		scene.append(line);
+	}
+	for (const node of nodes) {
+		const p = codePositions.get(node.id);
+		if (!p) {
+			continue;
+		}
+		const group = s('g', { transform: `translate(${p.x},${p.y})` });
+		const selected = node.id === code.folder;
+		group.setAttribute('class', `node folder${selected ? ' selected' : ''}`);
+		const radius = sizes.get(node.id) ?? 6;
+		const circle = s('circle', { r: radius });
+		const tooltip = s('title');
+		tooltip.textContent = `${node.id}: ${node.files} ${t.files}`;
+		const label = s('text', { x: radius + 4, y: 4 });
+		label.textContent = `${node.id === '.' ? '(root)' : node.id} · ${node.files}`;
+		group.append(circle, tooltip, label);
+		group.addEventListener('pointerdown', event => event.stopPropagation());
+		group.addEventListener('click', event => {
+			event.stopPropagation();
+			code.folder = code.folder === node.id ? undefined : node.id;
+			code.file = undefined;
+			render();
+		});
+		scene.append(group);
+	}
+	svg.addEventListener('click', () => {
+		if (!moved() && code.folder) {
+			code.folder = undefined;
+			code.file = undefined;
+			render();
+		}
+	});
+	container.append(svg);
+	if (!codeView.centered) {
+		// Fit the whole graph on first show.
+		const rect = container.getBoundingClientRect();
+		const points = nodes.map(node => codePositions.get(node.id)).filter((p): p is Point => !!p);
+		const minX = Math.min(...points.map(p => p.x)) - 40;
+		const maxX = Math.max(...points.map(p => p.x)) + 200;
+		const minY = Math.min(...points.map(p => p.y)) - 40;
+		const maxY = Math.max(...points.map(p => p.y)) + 40;
+		const scale = Math.max(0.2, Math.min(1.6, rect.width / (maxX - minX), (rect.height - 30) / (maxY - minY)));
+		codeView.scale = scale;
+		codeView.x = rect.width / 2 - ((minX + maxX) / 2) * scale;
+		codeView.y = (rect.height - 30) / 2 - ((minY + maxY) / 2) * scale;
+		codeView.centered = true;
+		scene.setAttribute('transform', `translate(${codeView.x},${codeView.y}) scale(${codeView.scale})`);
+	}
+	container.append(h('div', { class: 'hint meta', text: t.codeHint }));
+}
+
+function fileList(files: readonly string[], limit = 200): HTMLElement {
+	const dependents = code.dependents;
+	return h('div', { class: 'files' }, [
+		...files.slice(0, limit).map(file => h('div', { class: `file${file === code.file ? ' selected' : ''}`, title: file, on: { click: () => selectFile(file) } }, [
+			h('span', { class: 'name', text: file }),
+			h('span', { class: 'meta', text: `↓${code.map?.imports[file]?.length ?? 0} ↑${dependents?.get(file)?.length ?? 0}` }),
+		])),
+		files.length > limit && h('div', { class: 'meta', text: `… ${files.length - limit}` }),
+	]);
+}
+
+function renderCodeDetail(container: HTMLElement): void {
+	const map = code.map;
+	if (!map) {
+		return;
+	}
+	const dependents = code.dependents ?? new Map<string, string[]>();
+	const search = h('input', {
+		attrs: { id: 'code-search', type: 'search', placeholder: t.searchFiles, value: code.query },
+		on: { input: event => { code.query = valueOf(event).toLowerCase(); render(); } },
+	});
+	container.append(search);
+	const byDependents = (a: string, b: string) => (dependents.get(b)?.length ?? 0) - (dependents.get(a)?.length ?? 0) || a.localeCompare(b);
+	if (code.query) {
+		container.append(fileList(map.files.filter(file => file.toLowerCase().includes(code.query)).sort(byDependents), 100));
+		return;
+	}
+	const file = code.file;
+	if (file) {
+		const cycle = map.cycles.find(members => members.includes(file));
+		container.append(h('div', { class: 'detail' }, [
+			h('h2', { class: 'path', text: file }),
+			h('div', { class: 'actions' }, [h('button', { text: t.openFile, on: { click: () => post('openFile', { file }) } })]),
+			h('h3', { text: `${t.imports} (${map.imports[file]?.length ?? 0})` }),
+			fileList(map.imports[file] ?? []),
+			h('h3', { text: `${t.usedBy} (${dependents.get(file)?.length ?? 0})` }),
+			fileList([...(dependents.get(file) ?? [])].sort(byDependents)),
+			(map.packages[file]?.length ?? 0) > 0 && h('h3', { text: t.packages }),
+			(map.packages[file]?.length ?? 0) > 0 && h('div', { class: 'chips' }, (map.packages[file] ?? []).map(name => h('span', { class: 'chip', text: name }))),
+			cycle && h('h3', { text: t.inCycle }),
+			cycle && fileList(cycle.filter(member => member !== file)),
+		]));
+		return;
+	}
+	if (code.folder) {
+		const folder = code.folder;
+		container.append(h('h2', { class: 'path', text: folder }), fileList(map.files.filter(candidate => folderOf(candidate, CODE_DEPTH) === folder).sort(byDependents)));
+		return;
+	}
+	container.append(
+		h('div', { class: 'meta', text: t.pickFile }),
+		h('h3', { text: t.hubs }),
+		fileList([...map.files].filter(candidate => (dependents.get(candidate)?.length ?? 0) > 0).sort(byDependents), 25),
+	);
+}
+
+// #endregion
+
 // #region Detail
 
 function toggleTag(tag: string): void {
@@ -639,6 +897,9 @@ function render(): void {
 	const previousSearch = document.getElementById('search') as HTMLInputElement | null;
 	const hadFocus = !!previousSearch && document.activeElement === previousSearch;
 	const caret = previousSearch?.selectionStart ?? 0;
+	const codeSearch = document.getElementById('code-search') as HTMLInputElement | null;
+	const hadCodeFocus = !!codeSearch && document.activeElement === codeSearch;
+	const codeCaret = codeSearch?.selectionStart ?? 0;
 	app.replaceChildren();
 	if (data.available === false) {
 		app.append(h('div', { class: 'empty meta', text: t.noFolder }));
@@ -670,10 +931,22 @@ function render(): void {
 		attrs: { id: 'search', type: 'search', placeholder: t.search, value: ui.query },
 		on: { input: event => { ui.query = valueOf(event).toLowerCase(); render(); } },
 	});
-	const tabs: [Tab, string][] = [['graph', t.graph], ['timeline', t.timeline], ['inbox', `${t.inbox} (${data.inbox.length})`]];
+	const tabs: [Tab, string][] = [['graph', t.graph], ['timeline', t.timeline], ['inbox', `${t.inbox} (${data.inbox.length})`], ['code', t.code]];
+	const tabBar = h('div', { class: 'tabs' }, tabs.map(([id, label]) => h('button', {
+		class: `tab${ui.tab === id ? ' active' : ''}`, text: label, on: {
+			click: () => {
+				ui.tab = id;
+				persist();
+				if (id === 'code' && !code.requested) {
+					requestCodeMap();
+				}
+				render();
+			}
+		}
+	})));
 	const filters = h('div', { class: 'filters' }, [
 		h('div', { class: 'row' }, [
-			h('div', { class: 'tabs' }, tabs.map(([id, label]) => h('button', { class: `tab${ui.tab === id ? ' active' : ''}`, text: label, on: { click: () => { ui.tab = id; persist(); render(); } } }))),
+			tabBar,
 			searchBox,
 			h('button', { class: 'link', text: t.index, on: { click: () => post('openIndex') } }),
 			data.connected === false && h('button', { class: 'link', text: t.connect, on: { click: () => post('connectAgents') } }),
@@ -687,6 +960,29 @@ function render(): void {
 
 	const content = h('div', { class: 'content' });
 	const detail = h('div', { class: 'right' });
+	if (ui.tab === 'code') {
+		const map = code.map;
+		const codeBar = h('div', { class: 'filters' }, [h('div', { class: 'row' }, [
+			tabBar,
+			map && h('span', { class: 'stats meta' }, [
+				h('span', { class: 'stat' }, [h('b', { text: String(map.files.length) }), ` ${t.files}`]),
+				h('span', { class: 'stat' }, [h('b', { text: String(Object.values(map.imports).reduce((total, list) => total + list.length, 0)) }), ` ${t.importsCount}`]),
+				h('span', { class: 'stat' }, [h('b', { text: String(map.cycles.length) }), ` ${t.cyclesCount}`]),
+				map.truncated && h('span', { class: 'stat', text: t.truncated }),
+			]),
+			h('span', { class: 'spacer' }),
+			h('button', { class: 'secondary', text: code.scanning ? t.scanning : t.rescan, on: { click: () => { requestCodeMap(true); render(); } } }),
+		])]);
+		app.append(h('div', { class: 'main' }, [h('div', { class: 'left' }, [codeBar, content]), detail]));
+		renderCodeGraph(content);
+		renderCodeDetail(detail);
+		const previousCodeSearch = hadCodeFocus ? document.getElementById('code-search') as HTMLInputElement | null : null;
+		if (previousCodeSearch) {
+			previousCodeSearch.focus();
+			previousCodeSearch.setSelectionRange(codeCaret, codeCaret);
+		}
+		return;
+	}
 	app.append(h('div', { class: 'main' }, [h('div', { class: 'left' }, [filters, content]), detail]));
 	if (ui.tab === 'graph') {
 		renderGraph(content);
@@ -703,8 +999,44 @@ function render(): void {
 	}
 }
 
-window.addEventListener('message', (event: MessageEvent<{ type: 'data' } & Data | { type: 'select'; id: string }>) => {
+type CodeMapMessage = { type: 'codeMap'; unavailable?: boolean } & Partial<CodeMap>;
+window.addEventListener('message', (event: MessageEvent<{ type: 'data' } & Data | { type: 'select'; id: string } | { type: 'tab'; tab: Tab } | { type: 'codeMapScanning' } | CodeMapMessage>) => {
 	const message = event.data;
+	if (message.type === 'codeMap') {
+		code.scanning = false;
+		code.unavailable = !!message.unavailable;
+		if (message.files && message.imports) {
+			const map: CodeMap = { files: message.files, imports: message.imports, packages: message.packages ?? {}, cycles: message.cycles ?? [], truncated: !!message.truncated, scannedAt: message.scannedAt ?? '' };
+			const dependents = new Map<string, string[]>(map.files.map(file => [file, []]));
+			for (const [file, targets] of Object.entries(map.imports)) {
+				for (const target of targets) {
+					dependents.get(target)?.push(file);
+				}
+			}
+			code.map = map;
+			code.dependents = dependents;
+			if (code.file && !map.files.includes(code.file)) {
+				code.file = undefined;
+			}
+		}
+		if (ui.tab === 'code') {
+			render();
+		}
+		return;
+	}
+	if (message.type === 'codeMapScanning') {
+		code.scanning = true;
+		return;
+	}
+	if (message.type === 'tab') {
+		ui.tab = message.tab;
+		persist();
+		if (message.tab === 'code' && !code.requested) {
+			requestCodeMap();
+		}
+		render();
+		return;
+	}
 	if (message.type === 'data') {
 		data = message;
 		if (ui.selected && data.notes.length && !data.notes.some(note => note.id === ui.selected)) {
@@ -722,3 +1054,6 @@ window.addEventListener('message', (event: MessageEvent<{ type: 'data' } & Data 
 });
 render();
 post('ready');
+if (ui.tab === 'code') {
+	requestCodeMap();
+}

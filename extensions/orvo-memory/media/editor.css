@@ -502,3 +502,67 @@ form.edit textarea {
 .hidden {
 	display: none !important;
 }
+
+/* Code map */
+
+svg.graph .node.folder circle {
+	fill: var(--vscode-charts-blue);
+	fill-opacity: 0.75;
+}
+
+svg.graph .arrow {
+	fill: var(--vscode-editorIndentGuide-activeBackground1, var(--vscode-descriptionForeground));
+}
+
+#code-search {
+	width: 100%;
+	box-sizing: border-box;
+	margin-bottom: 10px;
+}
+
+.detail h3, .right > h3 {
+	font-size: 1em;
+	margin: 14px 0 4px;
+}
+
+h2.path {
+	font-size: 1.1em;
+	font-family: var(--vscode-editor-font-family);
+	word-break: break-all;
+	margin: 0 0 8px;
+}
+
+.files {
+	display: flex;
+	flex-direction: column;
+}
+
+.file {
+	display: flex;
+	justify-content: space-between;
+	gap: 8px;
+	padding: 2px 6px;
+	cursor: pointer;
+	border-radius: 3px;
+	font-family: var(--vscode-editor-font-family);
+	font-size: 0.92em;
+}
+
+.file:hover {
+	background: var(--vscode-list-hoverBackground);
+}
+
+.file.selected {
+	background: var(--vscode-list-activeSelectionBackground);
+	color: var(--vscode-list-activeSelectionForeground);
+}
+
+.file .name {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.file .meta {
+	flex: none;
+}
