@@ -127,6 +127,14 @@ class ClaudeAccountService extends Disposable implements IClaudeAccountService {
 				],
 			},
 		});
+		if (method === 'claudeai' && started.status === 'awaitingCode') {
+			// `claude setup-token` always ends on Anthropic's code page, so ask for the code right away.
+			void this._askForCode(authUrl).then(code => {
+				if (code) {
+					this._dispatch(CLAUDE_ACCOUNT_SIGN_IN_CODE_KEY, { nonce, code });
+				}
+			});
+		}
 		const result = started.status === 'signedIn'
 			? started
 			: await this._waitFor(nonce, account => account.status === 'signedIn' || account.status === 'error', SIGN_IN_TIMEOUT_MS);
